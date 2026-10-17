@@ -39,7 +39,8 @@ getiopolicy_np(int iotype, int scope)
 	iop_param.iop_iotype = iotype;
 	error = __iopolicysys(IOPOL_CMD_GET, &iop_param);
 	if (error != 0) {
-		errno = error;
+		/* The syscall wrapper already sets errno when it returns -1. */
+		if (error > 0) errno = error;
 		policy = -1;
 		goto exit;
 	}

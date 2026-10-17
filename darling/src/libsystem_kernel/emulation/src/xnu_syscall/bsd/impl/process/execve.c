@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include <errno.h>
+#include <string.h>
+#include <ctype.h>
 
 #include <mach-o/loader.h>
 #include <mach-o/fat.h>
@@ -25,11 +27,11 @@
 #include <darling/emulation/xnu_syscall/bsd/impl/unistd/write.h>
 
 #include <darlingserver/rpc.h>
+#include <darling/emulation/xnu_syscall/bsd/helper/misc/quarantine.h>
 
 
 #undef memcpy
 #include <darling/emulation/linux_premigration/resources/dserver-rpc-defs.h>
-extern bool isspace(char c);
 
 extern void _xtrace_execve_inject(const char*** envp_ptr);
 
@@ -38,7 +40,7 @@ static inline bool istext(char c)
 	return c >= 0x20 && c < 0x7F;
 }
 
-long sys_execve(const char* fname, const char** argvp, const char** envp)
+static long execve_internal(const char* fname, const char** argvp, const char** envp, bool disclaim)
 {
 	int ret;
 	struct vchroot_expand_args vc;
@@ -65,6 +67,8 @@ long sys_execve(const char* fname, const char** argvp, const char** envp)
 	int fd = sys_open(fname, BSD_O_RDONLY, 0);
 	if (fd < 0)
 		return fd;
+	ret = quarantine_check_exec_fd(fd);
+	if (ret < 0) { close_internal(fd); return ret; }
 
 	ret = sys_read(fd, shebang, sizeof(shebang));
 	if (ret < 0)
@@ -106,11 +110,11 @@ long sys_execve(const char* fname, const char** argvp, const char** envp)
 			return -ENOEXEC;
 
 		*nl = '\0';
-		for (i = 2; isspace(shebang[i]); i++);
+		for (i = 2; isspace((unsigned char)shebang[i]); i++);
 
 			interp = &shebang[i];
 
-			for (i = 0; !isspace(interp[i]) && interp[i]; i++);
+			for (i = 0; !isspace((unsigned char)interp[i]) && interp[i]; i++);
 
 			if (interp[i] == '\0')
 				arg = NULL;
@@ -121,7 +125,7 @@ long sys_execve(const char* fname, const char** argvp, const char** envp)
 			{
 				*arg = '\0'; // terminate interp
 				arg++;
-				while (isspace(*arg) && *arg)
+				while (isspace((unsigned char)*arg) && *arg)
 					arg++;
 				if (*arg == '\0')
 					arg = NULL; // no argument, just whitespace
@@ -141,7 +145,7 @@ long sys_execve(const char* fname, const char** argvp, const char** envp)
 			modargvp[i] = fname;
 
 			// Append original arguments
-			for (j = 1; j < len+1; j++)
+			for (j = 1; j < len; j++)
 				modargvp[i+j] = argvp[j];
 
 			argvp = modargvp;
@@ -231,7 +235,8 @@ long sys_execve(const char* fname, const char** argvp, const char** envp)
 		return errno_linux_to_bsd(ret);
 
 	// send a copy of the read end to the server (along with whether or not we're executing another Darling-managed binary)
-	ret = dserver_rpc_checkout(dserver_execve_pipe[0], is_script || is_macho);
+	ret = disclaim ? dserver_rpc_checkout_disclaim(dserver_execve_pipe[0], is_script || is_macho)
+		: dserver_rpc_checkout(dserver_execve_pipe[0], is_script || is_macho);
 	if (ret < 0)
 		return errno_linux_to_bsd(ret);
 
@@ -257,4 +262,14 @@ long sys_execve(const char* fname, const char** argvp, const char** envp)
 			&set, NULL, sizeof(linux_sigset_t));
 
 	return ret;
+}
+
+long sys_execve(const char* fname, const char** argvp, const char** envp)
+{
+	return execve_internal(fname, argvp, envp, false);
+}
+
+long sys_execve_disclaim(const char* fname, const char** argvp, const char** envp)
+{
+	return execve_internal(fname, argvp, envp, true);
 }

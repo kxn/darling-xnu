@@ -143,6 +143,10 @@ set(xnu_syscall_bsd_sources
 	src/xnu_syscall/bsd/impl/misc/abort_with_payload.c
 	src/xnu_syscall/bsd/impl/misc/clonefile.c
 	src/xnu_syscall/bsd/impl/misc/csops.c
+	src/xnu_syscall/bsd/impl/misc/mac_syscall.c
+	src/xnu_syscall/bsd/helper/misc/quarantine.c
+	src/xnu_syscall/bsd/helper/misc/sandbox_fs.c
+	src/xnu_syscall/bsd/helper/misc/fsevents.c
 	src/xnu_syscall/bsd/impl/misc/csrctl.c
 	src/xnu_syscall/bsd/impl/misc/fileport_makefd.c
 	src/xnu_syscall/bsd/impl/misc/fileport_makeport.c
@@ -224,6 +228,7 @@ set(xnu_syscall_bsd_sources
 	src/xnu_syscall/bsd/impl/stat/rmdir.c
 	src/xnu_syscall/bsd/impl/stat/stat.c
 	src/xnu_syscall/bsd/impl/stat/stat64_extended.c
+	src/xnu_syscall/bsd/impl/stat/quotactl.c
 	src/xnu_syscall/bsd/impl/stat/statfs.c
 	src/xnu_syscall/bsd/impl/synch/semwait_signal.c
 	src/xnu_syscall/bsd/impl/sysv_sem/semctl.c

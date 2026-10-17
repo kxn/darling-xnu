@@ -9,6 +9,8 @@
 #include <darling/emulation/conversion/common_at.h>
 #include <darling/emulation/linux_premigration/vchroot_expand.h>
 #include <darling/emulation/other/mach/lkm.h>
+#include <darling/emulation/xnu_syscall/bsd/helper/misc/quarantine.h>
+#include <darling/emulation/xnu_syscall/bsd/helper/misc/sandbox_fs.h>
 
 extern char* strcpy(char* dst, const char* src);
 
@@ -23,16 +25,22 @@ long sys_mkdirat(int fd, const char* path, unsigned int mode)
 	vc.flags = 0;
 	vc.dfd = atfd(fd);
 	
-	strcpy(vc.path, path);
+	ret = sandbox_fs_copy_path(vc.path, sizeof vc.path, path);
+	if (ret < 0) return ret;
 
 	ret = vchroot_expand(&vc);
 	if (ret < 0)
 		return errno_linux_to_bsd(ret);
 
-	ret = LINUX_SYSCALL(__NR_mkdirat, vc.dfd, vc.path, mode);
-
-	if (ret < 0)
-		return errno_linux_to_bsd(ret);
-
-	return 0;
+	struct sandbox_fs_path target;
+	ret = sandbox_fs_prepare(&vc, &target);
+	if (ret < 0) return ret;
+	ret = sandbox_fs_authorize("file-write-create", &target);
+	if (!ret) {
+		ret = LINUX_SYSCALL(__NR_mkdirat, target.directory, target.leaf, mode);
+		if (ret < 0) ret = errno_linux_to_bsd(ret);
+		else quarantine_created_path(target.directory, target.leaf, 1);
+	}
+	sandbox_fs_close(&target);
+	return ret;
 }

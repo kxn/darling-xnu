@@ -358,8 +358,9 @@ void sigexc_handler(int linux_signum, struct linux_siginfo* info, struct linux_u
 						&sa, NULL,
 						sizeof(sa.sa_mask));
 
-				// Resend signal to self
-				LINUX_SYSCALL(__NR_kill, 0, linux_signum);
+				// Resend only to this process. pid 0 addresses the whole
+				// process group, including the parent shell and siblings.
+				LINUX_SYSCALL(__NR_kill, LINUX_SYSCALL(__NR_getpid), linux_signum);
 			}
 		}
 	}

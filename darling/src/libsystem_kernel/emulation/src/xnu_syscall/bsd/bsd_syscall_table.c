@@ -34,6 +34,7 @@
 #include <darling/emulation/xnu_syscall/bsd/impl/misc/abort_with_payload.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/misc/clonefile.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/misc/csops.h>
+#include <darling/emulation/xnu_syscall/bsd/impl/misc/mac_syscall.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/misc/csrctl.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/misc/fileport_makefd.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/misc/fileport_makeport.h>
@@ -116,6 +117,7 @@
 #include <darling/emulation/xnu_syscall/bsd/impl/stat/stat.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/stat/stat64_extended.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/stat/statfs.h>
+#include <darling/emulation/xnu_syscall/bsd/impl/stat/quotactl.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/synch/semwait_signal.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/sysv_sem/semctl.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/sysv_sem/semget.h>
@@ -218,6 +220,7 @@
 #include <darling/emulation/xnu_syscall/bsd/impl/xattr/setxattr.h>
 
 void* __bsd_syscall_table[600] = {
+	[381] = sys_mac_syscall,
 	[0] = sys_syscall,
 	[1] = sys_exit,
 	[2] = sys_fork,
@@ -318,6 +321,7 @@ void* __bsd_syscall_table[600] = {
 	[157] = sys_statfs,
 	[158] = sys_fstatfs,
 	[159] = sys_unmount,
+	[165] = sys_quotactl,
 	[169] = sys_csops,
 	[170] = sys_csops_audittoken,
 	[173] = sys_waitid,

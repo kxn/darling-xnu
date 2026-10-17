@@ -5,6 +5,7 @@
 #include <sys/stat.h>
 
 #include <darling/emulation/conversion/stat/common.h>
+#include <darling/emulation/conversion/stat/mount_flags.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/unistd/getuid.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/unistd/getgid.h>
 
@@ -60,7 +61,7 @@ void statfs_linux_to_bsd(const struct linux_statfs64* lstat, struct bsd_statfs* 
 	stat->f_files = lstat->f_files;
 	stat->f_ffree = lstat->f_ffree;
 	stat->f_fsid = lstat->f_fsid;
-	stat->f_flags = lstat->f_flags; /* FIXME: convert flags */
+	stat->f_flags = darling_mount_flags_to_bsd(lstat->f_flags, lstat->f_type);
 }
 
 void statfs_linux_to_bsd64(const struct linux_statfs64* lstat, struct bsd_statfs64* stat)
@@ -73,5 +74,5 @@ void statfs_linux_to_bsd64(const struct linux_statfs64* lstat, struct bsd_statfs
 	stat->f_files = lstat->f_files;
 	stat->f_ffree = lstat->f_ffree;
 	stat->f_fsid = lstat->f_fsid;
-	stat->f_flags = lstat->f_flags; /* FIXME: convert flags */
+	stat->f_flags = darling_mount_flags_to_bsd(lstat->f_flags, lstat->f_type);
 }

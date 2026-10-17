@@ -141,6 +141,14 @@ struct linux_statfs64
 	long f_spare[4];
 };
 
+/* Match Darling's existing opaque st_dev identity across stat, statfs and
+ * attrlist. XNU clients require fsid.val[0] == st_dev; Linux's f_fsid is an
+ * unrelated filesystem-specific value and violates that invariant. */
+static inline unsigned long long darling_statfs_fsid(unsigned long long device, unsigned int type)
+{
+    return (unsigned int)device | ((unsigned long long)type << 32);
+}
+
 struct stat;
 struct stat64;
 

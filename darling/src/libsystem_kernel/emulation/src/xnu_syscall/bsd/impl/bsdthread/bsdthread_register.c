@@ -11,6 +11,7 @@
 #include <darling/emulation/common/simple.h>
 
 #include <darlingserver/rpc.h>
+#include <darling/mldr/elfcalls/dthreads.h>
 
 int pthread_obj_size;
 bsdthread_entry_t pthread_entry_point;
@@ -142,6 +143,8 @@ void wqueue_entry_point_asm_jump(void* self, int thread_port, void* stackaddr,
 	register void* arg4 asm("rcx") = item;
 	register int   arg5 asm("r8d") = reuse;
 	register int   arg6 asm("r9d") = nevents;
+	register void* stack_top asm("r10") = ((dthread_t)self)->stackaddr;
+	register bsdwqthread_entry_t entry asm("r11") = wqueue_entry_point;
 #elif __i386__
 	register void* arg1 asm("eax") = self;
 	register int   arg2 asm("ebx") = thread_port;
@@ -153,14 +156,20 @@ void wqueue_entry_point_asm_jump(void* self, int thread_port, void* stackaddr,
 
 #if __x86_64__
 	__asm__ __volatile__ (
-		// `_start_wqthread` does not expect the stack to be aligned (using the 
-		// call instruction will add the return address to the stack, causing 
-		// it to be aligned).
+		// A reused worker must discard its previous libpthread/syscall frames.
+		// stackaddr (the third ABI argument) is the LOW bound; the pthread
+		// object's stackaddr is the HIGH bound of the downward-growing stack.
+		// _start_wqthread pushes its own sentinel and calls _pthread_wqthread,
+		// so enter with a 16-byte aligned SP and no caller frame chain.
+		"movq %[stack_top], %%rsp\n"
+		"andq $-16, %%rsp\n"
+		"xorl %%ebp, %%ebp\n"
 		"jmpq *%[wqueue_entry_point]\n"
 		::
 		// Arguments follow the usual x86_64 calling conventions.
 		"r"(arg1),"r"(arg2),"r"(arg3),"r"(arg4),"r"(arg5),"r"(arg6),
-		[wqueue_entry_point] "r"(wqueue_entry_point)
+		[stack_top] "r"(stack_top), [wqueue_entry_point] "r"(entry)
+		: "memory"
 	);
 #elif __i386__
 	__asm__ __volatile__ (

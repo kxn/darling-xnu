@@ -1,101 +1,52 @@
 #include <darling/emulation/xnu_syscall/bsd/impl/stat/fstatfs.h>
-
-#include <stddef.h>
-#include <sys/fcntl.h>
-
+#include <sys/errno.h>
 #include <darling/emulation/conversion/stat/common.h>
-#include <darling/emulation/common/base.h>
 #include <darling/emulation/conversion/errno.h>
 #include <darling/emulation/common/simple.h>
-#include <darling/emulation/xnu_syscall/bsd/impl/fcntl/open.h>
-#include <darling/emulation/xnu_syscall/bsd/impl/unistd/close.h>
-#include <darling/emulation/xnu_syscall/bsd/impl/unistd/readlink.h>
-#include <darling/emulation/xnu_syscall/bsd/helper/misc/fdpath.h>
-#include <darling/emulation/linux_premigration/linux-syscalls/linux.h>
-
-extern char *strtok_r(char *str, const char *delim, char **saveptr);
-extern __SIZE_TYPE__ strlcpy(char* dst, const char* src, __SIZE_TYPE__ size);
-extern __SIZE_TYPE__ strlen(const char* str);
-extern int strncmp(const char* s1, const char* s2, __SIZE_TYPE__ len);
-extern int sprintf(char *str, const char *format, ...);
-
-long sys_fstatfs(int fd, struct bsd_statfs* buf)
+#include <darling/emulation/xnu_syscall/bsd/helper/stat/mounts.h>
+#undef memset
+extern void *memset(void *,int,__SIZE_TYPE__);
+long sys_fstatfs(int fd,struct bsd_statfs *buf)
 {
 #ifdef __x86_64__
-	return sys_fstatfs64(fd, (struct bsd_statfs64*) buf);
+    return sys_fstatfs64(fd,(struct bsd_statfs64 *)buf);
 #else
-#	warning Not implemented
-	return 0;
+    return -ENOTSUP;
 #endif
 }
-
-long sys_fstatfs64(int fd, struct bsd_statfs64* buf)
+long sys_fstatfs64(int fd,struct bsd_statfs64 *buf)
 {
-	int fd_m, ret;
-	struct simple_readline_buf rbuf;
-	struct linux_statfs64 lbuf;
-	char line[512];
-	char path[1024];
-	int max_len = 0;
-
-#ifdef __NR_fstatfs64
-	ret = LINUX_SYSCALL3(__NR_fstatfs64, fd, sizeof(lbuf), &lbuf);
-#else
-	ret = LINUX_SYSCALL2(__NR_fstatfs, fd, &lbuf);
-#endif
-
-	if (ret < 0)
-		return errno_linux_to_bsd(ret);
-
-	statfs_linux_to_bsd64(&lbuf, buf);
-
-	ret = fdpath(fd, path, sizeof(path));
-
-	if (ret < 0)
-		return ret;
-
-	fd_m = sys_open("/proc/self/mounts", O_RDONLY, 0);
-	if (fd_m < 0)
-		return fd_m;
-	
-	__simple_readline_init(&rbuf);
-
-	buf->f_mntonname[0] = 0;
-	buf->f_fstypename[0] = 0;
-	buf->f_mntfromname[0] = 0;
-	buf->f_iosize = 512;
-
-	while (__simple_readline(fd_m, &rbuf, line, sizeof(line)))
-	{
-		char* p;
-		char* saveptr;
-		char* mntfrom;
-		int len;
-
-		p = strtok_r(line, " ", &saveptr);
-		if (p == NULL)
-			continue;
-
-		mntfrom = p;
-		p = strtok_r(NULL, " ", &saveptr);
-		if (p == NULL)
-			continue;
-		
-		len = strlen(p);
-		if (strncmp(p, path, len) != 0 || len < max_len)
-			continue;
-
-		max_len = len;
-		strlcpy(buf->f_mntonname, p, sizeof(buf->f_mntonname));
-
-		p = strtok_r(NULL, " ", &saveptr);
-		if (p == NULL)
-			continue;
-
-		strlcpy(buf->f_fstypename, p, sizeof(buf->f_fstypename));
-		strlcpy(buf->f_mntfromname, mntfrom, sizeof(buf->f_mntfromname));
-	}
-
-	close_internal(fd_m);
-	return 0;
+    if(!buf)return -EFAULT;
+    struct linux_statfs64 fs;struct linux_stat identity;
+    long result=LINUX_SYSCALL(__NR_fstatfs,fd,&fs);
+    if(result<0)return errno_linux_to_bsd(result);
+    result=LINUX_SYSCALL(__NR_fstat,fd,&identity);
+    if(result<0)return errno_linux_to_bsd(result);
+    memset(buf,0,sizeof(*buf));statfs_linux_to_bsd64(&fs,buf);
+    buf->f_fsid=darling_statfs_fsid(identity.st_dev,fs.f_type);buf->f_iosize=fs.f_bsize;
+    /* Mount records use Linux physical paths. fdpath() already returns a
+     * Darwin path and must not be compared with this table. readlink also
+     * permits fstatfs on an open-but-unlinked file. */
+    char descriptor[64],physical[4096];
+    __simple_snprintf(descriptor,sizeof(descriptor),"/proc/self/fd/%d",fd);
+    result=LINUX_SYSCALL(__NR_readlink,descriptor,physical,sizeof(physical)-1);
+    if(result<0)return errno_linux_to_bsd(result);
+    physical[result]=0;
+    struct darling_mount_reader reader;struct darling_mount_entry entry;
+    result=darling_mount_open(&reader);if(result<0)return errno_linux_to_bsd(result);
+    size_t longest=0;
+    while((result=darling_mount_next(&reader,&entry))>0) {
+        size_t n=strlen(entry.target);
+        if(n<longest||!darling_mount_contains(entry.target,physical))continue;
+        result=darling_mount_guest_name(buf->f_mntonname,sizeof(buf->f_mntonname),entry.target);
+        if(result<0)break;
+        if(entry.source[0]=='/')result=darling_mount_guest_name(buf->f_mntfromname,sizeof(buf->f_mntfromname),entry.source);
+        else if(strlcpy(buf->f_mntfromname,entry.source,sizeof(buf->f_mntfromname))>=sizeof(buf->f_mntfromname))result=-36;
+        if(result<0)break;
+        strlcpy(buf->f_fstypename,entry.type,sizeof(buf->f_fstypename));longest=n;
+    }
+    LINUX_SYSCALL(__NR_close,reader.fd);
+    if(result<0)return errno_linux_to_bsd(result);
+    if(buf->f_mntonname[0]=='/' && !buf->f_mntonname[1])buf->f_flags|=0x00004000; /* MNT_ROOTFS */
+    return longest?0:-ENOENT;
 }

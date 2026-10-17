@@ -237,8 +237,17 @@ static long _proc_pidonfo_uniqinfo(int32_t pid, void* buffer, int32_t bufsize)
 	info->p_puniqueid = starttime << 16;
 	info->p_puniqueid |= (ppid & 0xffff);
 
+	// The server owns process generations and publishes the same value in
+	// Mach audit tokens. Linux start ticks identify a process lifetime, but
+	// cannot substitute for that public Darwin PID-version field.
+	uint32_t generation = 0;
+	int result = dserver_rpc_process_get_generation(pid, &generation);
+	if (result)
+		return errno_linux_to_bsd(result);
+	info->p_idversion = (int32_t)generation;
+
 #endif
-	return 1;
+	return sizeof(struct proc_uniqidentifierinfo);
 }
 
 // glibc bits/confname.h

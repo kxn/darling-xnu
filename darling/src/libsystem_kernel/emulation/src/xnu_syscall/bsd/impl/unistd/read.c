@@ -6,6 +6,7 @@
 #include <darling/emulation/xnu_syscall/bsd/helper/bsdthread/cancelable.h>
 #include <darling/emulation/linux_premigration/misc/ioctl.h>
 #include <darling/emulation/conversion/duct_errno.h>
+#include <darling/emulation/xnu_syscall/bsd/helper/misc/fsevents.h>
 
 #define LINUX_TCGETA 0x5405
 
@@ -18,6 +19,7 @@ long sys_read(int fd, void* mem, int len)
 long sys_read_nocancel(int fd, void* mem, int len)
 {
 	int ret;
+	if (fsevents_device_read(fd,mem,len,&ret)) return ret;
 
 	ret = LINUX_SYSCALL3(__NR_read, fd, mem, len);
 	if (ret < 0)

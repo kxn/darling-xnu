@@ -498,7 +498,7 @@ int vchroot_fdpath(struct vchroot_fdpath_args* args)
 
 	link[rv] = '\0';
 
-	if (rv >= prefix_path_len && strncmp(link, prefix_path, prefix_path_len) == 0)
+	if (rv >= prefix_path_len && strncmp(link, prefix_path, prefix_path_len) == 0 && (rv == prefix_path_len || link[prefix_path_len] == '/'))
 	{
 		if (args->maxlen-1 < rv - prefix_path_len)
 			return -LINUX_ENAMETOOLONG;
@@ -525,22 +525,20 @@ int vchroot_fdpath(struct vchroot_fdpath_args* args)
 
 int vchroot_unexpand(struct vchroot_unexpand_args* args)
 {
-	if (memcmp(args->path, prefix_path, prefix_path_len) == 0)
-	{
-		int bytes = strlen(args->path + prefix_path_len) + 1;
-		memmove(args->path, args->path + prefix_path_len, bytes);
-
-		if (args->path[0] == '\0')
-			strcpy(args->path, "/");
-	}
-	else
-	{
-		int bytes = strlen(args->path) + 1;
-		memmove(args->path + sizeof(EXIT_PATH) - 1, args->path, bytes);
-		memcpy(args->path, EXIT_PATH, sizeof(EXIT_PATH) - 1);
-	}
-
-	return 0;
+#ifndef TEST
+    if (prefix_path_len == -1) init_vchroot_path();
+#endif
+    size_t n = strlen(args->path);
+    if (n >= prefix_path_len && !strncmp(args->path, prefix_path, prefix_path_len) &&
+        (n == prefix_path_len || args->path[prefix_path_len] == '/')) {
+        memmove(args->path, args->path + prefix_path_len, n - prefix_path_len + 1);
+        if (!args->path[0]) strcpy(args->path, "/");
+    } else {
+        if (n + sizeof(EXIT_PATH) > sizeof(args->path)) return -LINUX_ENAMETOOLONG;
+        memmove(args->path + sizeof(EXIT_PATH) - 1, args->path, n + 1);
+        memcpy(args->path, EXIT_PATH, sizeof(EXIT_PATH) - 1);
+    }
+    return 0;
 }
 
 #ifdef TEST

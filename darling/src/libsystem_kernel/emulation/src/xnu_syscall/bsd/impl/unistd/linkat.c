@@ -7,6 +7,7 @@
 #include <darling/emulation/linux_premigration/linux-syscalls/linux.h>
 #include <darling/emulation/conversion/common_at.h>
 #include <darling/emulation/linux_premigration/vchroot_expand.h>
+#include <darling/emulation/xnu_syscall/bsd/helper/misc/quarantine.h>
 
 extern char* strcpy(char* dst, const char* src);
 
@@ -41,6 +42,7 @@ long sys_linkat(int fd, const char* path, int fdlink, const char* link, int flag
 	ret = LINUX_SYSCALL(__NR_linkat, vc.dfd, vc.path, vc2.dfd, vc2.path, linux_flags);
 	if (ret < 0)
 		ret = errno_linux_to_bsd(ret);
+	else quarantine_changed_path(vc2.dfd, vc2.path, 1, 3);
 
 	return ret;
 }

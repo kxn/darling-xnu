@@ -13,6 +13,8 @@
 #include <darling/emulation/xnu_syscall/bsd/helper/bsdthread/cancelable.h>
 
 #include <darlingserver/rpc.h>
+#include <darling/emulation/xnu_syscall/bsd/helper/misc/quarantine.h>
+#include <darling/emulation/xnu_syscall/bsd/helper/misc/fsevents.h>
 
 #ifndef O_NOFOLLOW
 #	define O_NOFOLLOW 0x0100
@@ -47,7 +49,9 @@ long sys_openat_nocancel(int fd, const char* filename, int flags, unsigned int m
 	}
 
 	// XNU /dev/random behaves like Linux /dev/urandom
-	if (strcmp(filename, "/dev/random") == 0)
+	if (strcmp(filename, "/dev/fsevents") == 0)
+		return fsevents_device_open(linux_flags);
+	else if (strcmp(filename, "/dev/random") == 0)
 		filename = "/dev/urandom";
 	// Expected by launchd and CF
 	else if (strcmp(filename, "/dev/autofs_nowait") == 0)
@@ -83,7 +87,28 @@ long sys_openat_nocancel(int fd, const char* filename, int flags, unsigned int m
 	// that for other syscalls, we either have to check for this and use an
 	// `l` variant (e.g. `llistxattr` instead of `listxatrr`) or we're screwed
 
-	ret = LINUX_SYSCALL(__NR_openat, vc.dfd, vc.path, linux_flags, mode);
+	int active = 0, created = 0;
+	if (flags & BSD_O_CREAT) {
+		active = quarantine_process_active();
+		if (active < 0) return active;
+	}
+	if (active && (flags & BSD_O_CREAT) && !(linux_flags & LINUX_O_EXCL)) {
+		// Distinguish an actual new inode without an access/stat race. The
+		// second open must not create a replacement inode behind our back.
+		for (unsigned attempt=0; attempt<8; ++attempt) {
+			ret = LINUX_SYSCALL(__NR_openat, vc.dfd, vc.path, linux_flags|LINUX_O_EXCL, mode);
+			if (ret >= 0) { created=1; break; }
+			if (ret != -17) break;
+			ret = LINUX_SYSCALL(__NR_openat, vc.dfd, vc.path, linux_flags&~LINUX_O_CREAT, mode);
+			if (ret != -2) break;
+			if (attempt==7) ret=-11;
+		}
+	} else {
+		ret = LINUX_SYSCALL(__NR_openat, vc.dfd, vc.path, linux_flags, mode);
+		created = active && (flags & BSD_O_CREAT) && (linux_flags & LINUX_O_EXCL) && ret>=0;
+	}
+	if (created) quarantine_created_fd(ret);
+	else if (ret>=0 && ((flags&3) || (flags&BSD_O_TRUNC))) quarantine_changed_fd(ret,1);
 	if (ret < 0)
 		ret = errno_linux_to_bsd(ret);
 

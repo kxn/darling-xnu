@@ -9,6 +9,7 @@
 #include <darling/emulation/xnu_syscall/bsd/helper/ioctl/filio.h>
 #include <darling/emulation/xnu_syscall/bsd/helper/ioctl/termios.h>
 #include <darling/emulation/xnu_syscall/bsd/helper/ioctl/socket.h>
+#include <darling/emulation/xnu_syscall/bsd/helper/misc/fsevents.h>
 
 #define IOCTL_STEP(x) { int state, retval; state = (x); \
 	if (state == IOCTL_HANDLED) return retval; }
@@ -16,6 +17,8 @@
 // Emulated ioctl implementation
 long sys_ioctl(int fd, int cmd, void* arg)
 {
+	int event_result;
+	if (fsevents_device_ioctl(fd,(unsigned)cmd,arg,&event_result)) return event_result;
 	IOCTL_STEP(handle_filio(fd, cmd, arg, &retval));
 	IOCTL_STEP(handle_socket(fd, cmd, arg, &retval));
 	IOCTL_STEP(handle_termios(fd, cmd, arg, &retval));

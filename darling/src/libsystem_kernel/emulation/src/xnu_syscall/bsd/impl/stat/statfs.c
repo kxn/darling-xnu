@@ -1,104 +1,35 @@
 #include <darling/emulation/xnu_syscall/bsd/impl/stat/statfs.h>
-
-#include <stddef.h>
-#include <sys/fcntl.h>
-
+#include <darling/emulation/xnu_syscall/bsd/impl/stat/fstatfs.h>
+#include <sys/errno.h>
 #include <darling/emulation/conversion/stat/common.h>
 #include <darling/emulation/common/base.h>
 #include <darling/emulation/conversion/errno.h>
-#include <darling/emulation/common/simple.h>
-#include <darling/emulation/xnu_syscall/bsd/impl/fcntl/open.h>
-#include <darling/emulation/xnu_syscall/bsd/impl/unistd/close.h>
+#include <darling/emulation/conversion/fcntl/open.h>
 #include <darling/emulation/linux_premigration/vchroot_expand.h>
 #include <darling/emulation/common/bsdthread/per_thread_wd.h>
 #include <darling/emulation/linux_premigration/linux-syscalls/linux.h>
-
 #undef strlcpy
-
-extern char *strtok_r(char *str, const char *delim, char **saveptr);
-extern __SIZE_TYPE__ strlcpy(char* dst, const char* src, __SIZE_TYPE__ size);
-extern __SIZE_TYPE__ strlen(const char* str);
-extern int strncmp(const char* s1, const char* s2, __SIZE_TYPE__ len);
-
-long sys_statfs(const char* path, struct bsd_statfs* buf)
+extern __SIZE_TYPE__ strlcpy(char *,const char *,__SIZE_TYPE__);
+long sys_statfs(const char *path,struct bsd_statfs *buf)
 {
 #ifdef __x86_64__
-	return sys_statfs64(path, (struct bsd_statfs64*) buf);
+    return sys_statfs64(path,(struct bsd_statfs64 *)buf);
 #else
-#	warning Not implemented
-	return 0;
+    return -ENOTSUP;
 #endif
 }
-
-long sys_statfs64(const char* path, struct bsd_statfs64* buf)
+long sys_statfs64(const char *path,struct bsd_statfs64 *buf)
 {
-	int fd, ret;
-	struct simple_readline_buf rbuf;
-	struct linux_statfs64 lbuf;
-	char line[512];
-	int max_len = 0;
-
-	struct vchroot_expand_args vc;
-	vc.flags = 0;
-	vc.dfd = get_perthread_wd();
-
-	strcpy(vc.path, path);
-	ret = vchroot_expand(&vc);
-	if (ret < 0)
-		return errno_linux_to_bsd(ret);
-
-#ifdef __NR_statfs64
-	ret = LINUX_SYSCALL2(__NR_statfs64, vc.path, &lbuf);
-#else
-	ret = LINUX_SYSCALL2(__NR_statfs, vc.path, &lbuf);
-#endif
-
-	if (ret < 0)
-		return errno_linux_to_bsd(ret);
-
-	statfs_linux_to_bsd64(&lbuf, buf);
-
-	fd = sys_open("/proc/self/mounts", O_RDONLY, 0);
-	if (fd < 0)
-		return fd;
-	
-	__simple_readline_init(&rbuf);
-
-	buf->f_mntonname[0] = 0;
-	buf->f_fstypename[0] = 0;
-	buf->f_mntfromname[0] = 0;
-
-	while (__simple_readline(fd, &rbuf, line, sizeof(line)))
-	{
-		char* p;
-		char* saveptr;
-		char* mntfrom;
-		int len;
-
-		p = strtok_r(line, " ", &saveptr);
-		if (p == NULL)
-			continue;
-
-		mntfrom = p;
-		p = strtok_r(NULL, " ", &saveptr);
-		if (p == NULL)
-			continue;
-		
-		len = strlen(p);
-		if (strncmp(p, vc.path, len) != 0 || len < max_len)
-			continue;
-
-		max_len = len;
-		strlcpy(buf->f_mntonname, p, sizeof(buf->f_mntonname));
-
-		p = strtok_r(NULL, " ", &saveptr);
-		if (p == NULL)
-			continue;
-
-		strlcpy(buf->f_fstypename, p, sizeof(buf->f_fstypename));
-		strlcpy(buf->f_mntfromname, mntfrom, sizeof(buf->f_mntfromname));
-	}
-
-	close_internal(fd);
-	return 0;
+    if(!path||!buf)return -EFAULT;
+    struct vchroot_expand_args vc;
+    vc.flags=VCHROOT_FOLLOW;vc.dfd=get_perthread_wd();
+    if(strlcpy(vc.path,path,sizeof(vc.path))>=sizeof(vc.path))return -ENAMETOOLONG;
+    long result=vchroot_expand(&vc);
+    if(result<0)return errno_linux_to_bsd(result);
+    /* O_PATH preserves statfs permission semantics, including unreadable files
+     * and directories. Opening the resolved vnode also keeps path and FD
+     * filesystem identities/mount names on the very same implementation. */
+    int fd=LINUX_SYSCALL(__NR_openat,vc.dfd,vc.path,0x200000|LINUX_O_CLOEXEC,0);
+    if(fd<0)return errno_linux_to_bsd(fd);
+    result=sys_fstatfs64(fd,buf);LINUX_SYSCALL(__NR_close,fd);return result;
 }

@@ -215,6 +215,7 @@ set(syscall_sources
 	wrappers/sfi.c
 	# wrappers/sigsuspend-base.c
 	wrappers/stackshot.c
+	wrappers/statfs_ext.c
 	wrappers/system-version-compat.c
 	wrappers/system-version-compat-support.c
 	wrappers/terminate_with_reason.c

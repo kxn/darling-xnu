@@ -4,6 +4,9 @@
 #include <stdint.h>
 #include <sys/spawn.h>
 #include <sys/fcntl.h>
+#include <sys/uio.h>
+#include <sys/errno.h>
+#include <string.h>
 #include <_libkernel_init.h>
 
 #include <darling/emulation/xnu_syscall/bsd/impl/process/execve.h>
@@ -44,11 +47,51 @@
 
 extern _libkernel_functions_t _libkernel_functions;
 
+static int copy_spawn_data(void* target, const void* source, size_t length)
+{
+	struct iovec local = {target, length};
+	struct iovec remote = {(void*)source, length};
+	long pid = LINUX_SYSCALL0(__NR_getpid);
+	long count = LINUX_SYSCALL(__NR_process_vm_readv, pid, &local, 1, &remote, 1, 0);
+	return count == length ? 0 : -EFAULT;
+}
+
+static int spawn_disclaim(const struct _posix_spawn_args_desc* desc, bool* disclaim)
+{
+	*disclaim = false;
+	if (!desc || !desc->mac_extensions_size) return 0;
+	struct { int alloc, count; } header;
+	if (desc->mac_extensions_size < sizeof(header)) return -EINVAL;
+	if (copy_spawn_data(&header, desc->mac_extensions, sizeof(header))) return -EFAULT;
+	if (header.count < 0 || header.alloc < header.count ||
+		header.count > (desc->mac_extensions_size - sizeof(header)) / sizeof(struct xnu_spawn_mac_extension)) return -EINVAL;
+	// Bound work on malformed/custom descriptors. The ordinary API uses one
+	// Quarantine entry; other MAC policy implementations are not available.
+	if (header.count > 1024) return -E2BIG;
+	bool found = false;
+	for (int i = 0; i < header.count; ++i) {
+		struct xnu_spawn_mac_extension extension;
+		if (copy_spawn_data(&extension, &desc->mac_extensions->extensions[i], sizeof(extension))) return -EFAULT;
+		if (memcmp(extension.policyname, "Quarantine", sizeof("Quarantine"))) return -ENOTSUP;
+		if (found || extension.datalen != 24) return -EINVAL;
+		found = true;
+		struct { uint32_t version, size, flags, reserved; uint64_t extra; } data;
+		if (copy_spawn_data(&data, (void*)(uintptr_t)extension.data, sizeof(data))) return -EFAULT;
+		if (data.version != 1 || data.size != sizeof(data)) return -EINVAL;
+		if ((data.flags & ~1u) || data.reserved || data.extra) return -ENOTSUP;
+		*disclaim = (data.flags & 1) != 0;
+	}
+	return 0;
+}
+
 long sys_posix_spawn(int* pid, const char* path, const struct _posix_spawn_args_desc* desc,
 		char** argvp, char** envp)
 {
 	int ret, my_pid;
 	int pipe[2] = { -1, -1 };
+	bool disclaim = false;
+	ret = spawn_disclaim(desc, &disclaim);
+	if (ret) return ret;
 
 	if (desc && desc->attrp && desc->attrp->psa_flags & POSIX_SPAWN_SETEXEC)
 		goto no_fork;
@@ -329,7 +372,7 @@ no_fork:
 			envp = new_envp;
 		}
 
-		ret = sys_execve((char*) path, argvp, envp);
+		ret = disclaim ? sys_execve_disclaim((char*)path, argvp, envp) : sys_execve((char*)path, argvp, envp);
 fail:
 		//__simple_kprintf("posix_spawn is failing with %d\n", ret);
 		if (desc && desc->attrp && desc->attrp->psa_flags & POSIX_SPAWN_SETEXEC)

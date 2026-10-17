@@ -1,3 +1,6 @@
+#include <sys/errno.h>
+#include <darling/emulation/conversion/duct_errno.h>
+#include <darling/emulation/xnu_syscall/bsd/helper/misc/quarantine.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/xattr/getxattr.h>
 
 #include <sys/errno.h>
@@ -15,6 +18,9 @@ long sys_getxattr(const char* path, const char* name, char* value,
 		unsigned long size, unsigned int pos, int options)
 {
 	int ret;
+	const char *linux_name;
+	ret = quarantine_xattr_name(name, &linux_name, 0);
+	if (ret < 0) return ret;
 
 	if (pos != 0)
 		return -ERANGE;
@@ -29,10 +35,11 @@ long sys_getxattr(const char* path, const char* name, char* value,
 	if (ret < 0)
 		return errno_linux_to_bsd(ret);
 
-	ret = LINUX_SYSCALL(__NR_getxattr, vc.path, name, value, size);
+	ret = LINUX_SYSCALL((options & XATTR_NOFOLLOW) ? __NR_lgetxattr : __NR_getxattr, vc.path, linux_name, value, size);
 
+	if (ret == -LINUX_ENODATA) return -ENOATTR;
 	if (ret < 0)
 		return errno_linux_to_bsd(ret);
 
-	return 0;
+	return ret;
 }
