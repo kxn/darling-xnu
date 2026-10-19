@@ -45,6 +45,9 @@ static long execve_internal(const char* fname, const char** argvp, const char** 
 	int ret;
 	struct vchroot_expand_args vc;
 	char mldr_path[4096];
+	/* envp retains this address until the final Linux execve syscall.
+	 * Keep it alive across checkout and signal-mask setup below. */
+	char mldr_lifetime_pipe_env[32] = { '\0' };
 	uint64_t mldr_path_length;
 	const char* path_to_exec = vc.path;
 
@@ -190,7 +193,6 @@ static long execve_internal(const char* fname, const char** argvp, const char** 
 		struct linux_sockaddr_un* server_socket_address = dserver_rpc_hooks_get_server_address();
 		const char* server_socket_path = server_socket_address->sun_path;
 
-		char mldr_lifetime_pipe_env[32] = { '\0' };
 		__simple_snprintf(mldr_lifetime_pipe_env, sizeof(mldr_lifetime_pipe_env) - 1, "__mldr_lifetime_pipe=%d", __dserver_get_process_lifetime_pipe());
 
 		// count original env vars
