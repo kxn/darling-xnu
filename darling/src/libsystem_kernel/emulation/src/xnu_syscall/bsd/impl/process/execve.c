@@ -40,6 +40,32 @@ static inline bool istext(char c)
 	return c >= 0x20 && c < 0x7F;
 }
 
+static const char* exec_environment_value(const char** envp, const char* key)
+{
+	size_t length = strlen(key);
+	for (size_t i = 0; envp[i]; ++i)
+		if (!strncmp(envp[i], key, length) && envp[i][length] == '=')
+			return envp[i] + length + 1;
+	return NULL;
+}
+
+static bool exec_environment_matches(const char* fname, const char* paths)
+{
+	if (!paths || fname[0] != '/')
+		return false;
+	size_t length = strlen(fname);
+	while (*paths) {
+		const char* end = strchr(paths, ':');
+		size_t component = end ? (size_t)(end - paths) : strlen(paths);
+		if (component == length && !strncmp(fname, paths, length))
+			return true;
+		if (!end)
+			break;
+		paths = end + 1;
+	}
+	return false;
+}
+
 static long execve_internal(const char* fname, const char** argvp, const char** envp, bool disclaim)
 {
 	int ret;
@@ -101,6 +127,39 @@ static long execve_internal(const char* fname, const char** argvp, const char** 
 
 	uint32_t magic = *(uint32_t*)shebang;
 	is_macho = magic == MH_MAGIC || magic == MH_CIGAM || magic == MH_MAGIC_64 || magic == MH_CIGAM_64 || magic == FAT_MAGIC || magic == FAT_CIGAM;
+
+	/* Opt-in, exact-path library scopes for original Mach-O tools. Build
+	 * services can execute an absolute path without passing through xcrun.
+	 * Copy the child vector; the caller's environment and buffers stay intact. */
+	if (is_macho && exec_environment_matches(fname,
+			exec_environment_value(envp, "DARLING_DYLD_OVERRIDE_EXECUTABLES"))) {
+		const char* frameworks = exec_environment_value(envp, "DARLING_DYLD_OVERRIDE_FRAMEWORK_PATH");
+		const char* libraries = exec_environment_value(envp, "DARLING_DYLD_OVERRIDE_LIBRARY_PATH");
+		if (frameworks || libraries) {
+			size_t count = 0, used = 0;
+			while (envp[count]) ++count;
+			const char** scoped = __builtin_alloca((count + 3) * sizeof(*scoped));
+			for (size_t i = 0; i < count; ++i) {
+				if (frameworks && !strncmp(envp[i], "DYLD_FRAMEWORK_PATH=", sizeof("DYLD_FRAMEWORK_PATH=") - 1)) continue;
+				if (libraries && !strncmp(envp[i], "DYLD_LIBRARY_PATH=", sizeof("DYLD_LIBRARY_PATH=") - 1)) continue;
+				scoped[used++] = envp[i];
+			}
+			if (frameworks) {
+				char* value = __builtin_alloca(sizeof("DYLD_FRAMEWORK_PATH=") + strlen(frameworks));
+				strcpy(value, "DYLD_FRAMEWORK_PATH=");
+				strcat(value, frameworks);
+				scoped[used++] = value;
+			}
+			if (libraries) {
+				char* value = __builtin_alloca(sizeof("DYLD_LIBRARY_PATH=") + strlen(libraries));
+				strcpy(value, "DYLD_LIBRARY_PATH=");
+				strcat(value, libraries);
+				scoped[used++] = value;
+			}
+			scoped[used] = NULL;
+			envp = scoped;
+		}
+	}
 
 	if (is_script)
 	{
