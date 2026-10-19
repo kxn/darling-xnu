@@ -117,7 +117,15 @@ long FUNC_NAME(int fd,
         }
     }
     char *name=fullpath;
-    if(fullpath_valid){size_t n=strlen(fullpath);while(n>1&&fullpath[n-1]!='/')n--;if(fullpath[n])name=fullpath+n;}
+    if(fullpath_valid){
+        /* The Linux root maps to /Volumes/SystemRoot/. Keep its canonical
+         * guest basename, rather than returning the entire trailing-slash
+         * path as ATTR_CMN_NAME (Ruby uses it to traverse absolute globs). */
+        size_t n=strlen(fullpath);
+        while(n>1&&fullpath[n-1]=='/')fullpath[--n]=0;
+        while(n>1&&fullpath[n-1]!='/')n--;
+        if(fullpath[n])name=fullpath+n;
+    }
     unsigned char finder[32]={0};int finder_valid=0;
     long resource_length=-1;
     if(alist->commonattr&ATTR_CMN_FNDRINFO) {

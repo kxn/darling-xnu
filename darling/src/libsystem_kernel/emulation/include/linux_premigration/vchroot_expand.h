@@ -22,6 +22,8 @@ struct vchroot_unexpand_args
 };
 
 int vchroot_expand(struct vchroot_expand_args* args);
+// Copy a Darwin user pathname before expansion; returns Linux negative errno.
+int vchroot_copy_path(struct vchroot_expand_args* args,const char* path);
 int vchroot_unexpand(struct vchroot_unexpand_args* args);
 int vchroot_fdpath(struct vchroot_fdpath_args* args);
 

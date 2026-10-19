@@ -41,6 +41,11 @@ long sys_openat_nocancel(int fd, const char* filename, int flags, unsigned int m
 	if (!filename)
 		return -EFAULT;
 
+	struct vchroot_expand_args vc;
+	ret=vchroot_copy_path(&vc,filename);
+	if(ret<0)return errno_linux_to_bsd(ret);
+	filename=vc.path;
+
 	linux_flags = oflags_bsd_to_linux(flags);
 
 	if (sizeof(void*) == 4)
@@ -69,11 +74,10 @@ long sys_openat_nocancel(int fd, const char* filename, int flags, unsigned int m
 		return ret;
 	}
 
-	struct vchroot_expand_args vc;
 	vc.flags = (flags & BSD_O_SYMLINK || flags & BSD_O_NOFOLLOW) ? 0 : VCHROOT_FOLLOW;
 	vc.dfd = atfd(fd);
 
-	strcpy(vc.path, filename);
+	if(filename!=vc.path)strcpy(vc.path, filename);
 	ret = vchroot_expand(&vc);
 	if (ret < 0) {
 		return errno_linux_to_bsd(ret);

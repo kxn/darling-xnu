@@ -25,7 +25,8 @@ long sys_fstatat(int fd, const char* path, struct stat* stat, int flag)
 	vc.flags = (flag & BSD_AT_SYMLINK_NOFOLLOW) ? 0 : VCHROOT_FOLLOW;
 	vc.dfd = atfd(fd);
 
-	strcpy(vc.path, path);
+	ret = vchroot_copy_path(&vc,path);
+	if(ret<0)return errno_linux_to_bsd(ret);
 	ret = vchroot_expand(&vc);
 	if (ret < 0)
 		return errno_linux_to_bsd(ret);
@@ -61,7 +62,8 @@ long sys_fstatat64(int fd, const char* path, struct stat64* stat, int flag)
 	vc.flags = (flag & BSD_AT_SYMLINK_NOFOLLOW) ? 0 : VCHROOT_FOLLOW;
 	vc.dfd = atfd(fd);
 
-	strcpy(vc.path, path);
+	ret = vchroot_copy_path(&vc,path);
+	if(ret<0)return errno_linux_to_bsd(ret);
 	ret = vchroot_expand(&vc);
 	if (ret < 0)
 		return errno_linux_to_bsd(ret);

@@ -22,8 +22,8 @@ long sys_lstat(const char* path, struct stat* stat)
 	vc.flags = 0;
 	vc.dfd = get_perthread_wd();
 	
-	strcpy(vc.path, path);
-
+	ret = vchroot_copy_path(&vc,path);
+	if(ret<0)return errno_linux_to_bsd(ret);
 	ret = vchroot_expand(&vc);
 	if (ret < 0)
 		return errno_linux_to_bsd(ret);
@@ -57,8 +57,8 @@ long sys_lstat64(const char* path, struct stat64* stat)
 	vc.flags = 0;
 	vc.dfd = get_perthread_wd();
 	
-	strcpy(vc.path, path);
-
+	ret = vchroot_copy_path(&vc,path);
+	if(ret<0)return errno_linux_to_bsd(ret);
 	ret = vchroot_expand(&vc);
 	if (ret < 0)
 		return errno_linux_to_bsd(ret);

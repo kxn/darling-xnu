@@ -16,6 +16,7 @@
 #	define LINUX_ENOENT ENOENT
 #	define LINUX_ELOOP ELOOP
 #	define LINUX_ENAMETOOLONG ENAMETOOLONG
+#   define LINUX_EFAULT EFAULT
 
 #	define LINUX_S_IFMT S_IFMT
 #	define LINUX_S_IFLNK S_IFLNK
@@ -89,7 +90,8 @@ static const char EXIT_PATH[] = "/Volumes/SystemRoot";
 static bool icase_enabled = true;
 #endif
 
-static const int MAX_SYMLINK_DEPTH = 10;
+// XNU bsd/sys/param.h: MAXSYMLINKS is cumulative over one pathname lookup.
+static const int VCHROOT_MAX_SYMLINKS = 32;
 
 struct context
 {
@@ -99,12 +101,41 @@ struct context
 	char current_path[4096];
 	int current_path_len;
 
-	int symlink_depth;
+	int symlinks_followed;
+	char dirents[4096];
 	bool unknown_component;
 	bool follow;
 };
 
 static int vchroot_run(const char* path, struct context* ctxt);
+
+int vchroot_copy_path(struct vchroot_expand_args* args,const char* path)
+{
+    if(!args||!path)return -LINUX_EFAULT;
+    // Darwin PATH_MAX includes the terminator. Read within a single Linux
+    // page at a time, so a valid NUL at a guard-page boundary is not rejected.
+    unsigned copied=0;
+    while(copied<1024){
+        char bytes[256];unsigned count=sizeof bytes;
+        if(count>1024-copied)count=1024-copied;
+        unsigned until_page=4096-(((unsigned long)path+copied)&4095);
+        if(count>until_page)count=until_page;
+#ifdef TEST
+        memcpy(bytes,path+copied,count);long received=count;
+#else
+        struct {void* base;__SIZE_TYPE__ length;} local={bytes,count},remote={(void*)(path+copied),count};
+        long pid=LINUX_SYSCALL(__NR_getpid);
+        long received=LINUX_SYSCALL(__NR_process_vm_readv,pid,&local,1,&remote,1,0);
+#endif
+        if(received<=0)return -LINUX_EFAULT;
+        for(unsigned i=0;i<(unsigned)received;i++){
+            args->path[copied+i]=bytes[i];
+            if(!bytes[i])return 0;
+        }
+        copied+=received;
+    }
+    return -LINUX_ENAMETOOLONG;
+}
 
 #ifndef TEST
 VISIBLE
@@ -143,11 +174,11 @@ int __darling_vchroot_expand(const char* path, char* out)
 		.flags = 0
 	};
 
-	strcpy(a.path, path);
-
-	int rv = vchroot_expand(&a);
-
-	strcpy(out, a.path);
+	if(!out)return -LINUX_EFAULT;
+	int rv=vchroot_copy_path(&a,path);
+	if(rv<0)return rv;
+	rv = vchroot_expand(&a);
+	if(rv==0)strcpy(out, a.path);
 	return rv;
 }
 #endif
@@ -179,7 +210,7 @@ int vchroot_expand(struct vchroot_expand_args* args)
 #endif
 
 	ctxt.unknown_component = false;
-	ctxt.symlink_depth = 0;
+	ctxt.symlinks_followed = 0;
 	ctxt.current_root = prefix_path;
 	ctxt.current_root_len = prefix_path_len;
 	ctxt.follow = !!(args->flags & VCHROOT_FOLLOW);
@@ -247,9 +278,6 @@ int vchroot_expand(struct vchroot_expand_args* args)
 
 static int vchroot_run(const char* input_path, struct context* ctxt)
 {
-	if (ctxt->symlink_depth > MAX_SYMLINK_DEPTH)
-		return -LINUX_ELOOP;
-
 	if (*input_path == '/')
 	{
 		strcpy(ctxt->current_path, ctxt->current_root);
@@ -345,7 +373,7 @@ static int vchroot_run(const char* input_path, struct context* ctxt)
 						#else
 							int dfd = LINUX_SYSCALL(__NR_openat, LINUX_AT_FDCWD, (prevlen > 1) ? ctxt->current_path : "/", LINUX_O_RDONLY);
 						#endif
-						char dirents[4096]; // buffer space for struct linux_dirent64 entries
+						char* dirents=ctxt->dirents;
 						int len;
 
 						if (dfd < 0)
@@ -355,7 +383,7 @@ static int vchroot_run(const char* input_path, struct context* ctxt)
 						}
 						
 						// Get a batch of directory entries
-						while ((len = LINUX_SYSCALL(__NR_getdents64, dfd, dirents, sizeof(dirents))) > 0)
+						while ((len = LINUX_SYSCALL(__NR_getdents64, dfd, dirents, sizeof(ctxt->dirents))) > 0)
 						{
 							int pos = 0;
 
@@ -383,17 +411,18 @@ done_getdents:
 						// Follow symlink if follow is true or if we haven't reached the end of the input path yet
 						if (ctxt->follow || *end)
 						{
-							char link[512];
+							char link[1024];
 							int rv;
 
 							#if defined(__NR_readlink)
-								rv = LINUX_SYSCALL(__NR_readlink, ctxt->current_path, link, sizeof(link) - 1);
+								rv = LINUX_SYSCALL(__NR_readlink, ctxt->current_path, link, sizeof(link));
 							#else
-								rv = LINUX_SYSCALL(__NR_readlinkat, LINUX_AT_FDCWD, ctxt->current_path, link, sizeof(link) - 1);
+								rv = LINUX_SYSCALL(__NR_readlinkat, LINUX_AT_FDCWD, ctxt->current_path, link, sizeof(link));
 							#endif
 
 							if (rv < 0)
 								return rv;
+							if(rv>=sizeof(link))return -LINUX_ENAMETOOLONG;
 
 							link[rv] = '\0';
 
@@ -419,7 +448,8 @@ done_getdents:
 							const bool orig_follow = ctxt->follow;
 
 							ctxt->follow = true;
-							ctxt->symlink_depth++;
+							if(ctxt->symlinks_followed>=VCHROOT_MAX_SYMLINKS)return -LINUX_ELOOP;
+							ctxt->symlinks_followed++;
 
 							// resolve absolute symlinks within the prefix
 							//
@@ -433,7 +463,6 @@ done_getdents:
 
 							rv = vchroot_run(link, ctxt);
 
-							ctxt->symlink_depth--;
 							ctxt->follow = orig_follow;
 
 							if (rv != 0)
