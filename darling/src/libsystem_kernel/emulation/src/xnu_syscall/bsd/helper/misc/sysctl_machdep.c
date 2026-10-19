@@ -1,3 +1,4 @@
+#include <darling-config.h>
 #include <darling/emulation/xnu_syscall/bsd/helper/misc/sysctl_machdep.h>
 
 #include <sys/errno.h>
@@ -272,7 +273,7 @@ sysctl_handler(handle_core_count) {
 	// it's easier to use /proc/cpuinfo for this.
 	// using cpuid directly is more difficult because AMD processors don't use the same method as Intel processors.
 
-	int infofd = sys_open_nocancel("/proc/cpuinfo", BSD_O_RDONLY, 0);
+	int infofd = sys_open_nocancel(DARLING_PROCFS_PATH "/cpuinfo", BSD_O_RDONLY, 0);
 	struct rdline_buffer rbuf;
 	const char* line;
 

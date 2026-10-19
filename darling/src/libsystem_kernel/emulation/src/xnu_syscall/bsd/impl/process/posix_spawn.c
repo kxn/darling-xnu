@@ -1,3 +1,4 @@
+#include <darling-config.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/process/posix_spawn.h>
 
 #include <stddef.h>
@@ -154,7 +155,7 @@ no_fork:
 
 			if (desc->attrp->psa_flags & POSIX_SPAWN_CLOEXEC_DEFAULT) {
 				// set O_CLOEXEC on everything
-				int dir = sys_open("/proc/self/fd", BSD_O_RDONLY, 0);
+				int dir = sys_open(DARLING_PROCFS_PATH "/self/fd", BSD_O_RDONLY, 0);
 				char buf[4096];
 				int len = 0;
 

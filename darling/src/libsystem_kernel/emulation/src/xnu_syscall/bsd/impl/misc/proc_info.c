@@ -1,3 +1,4 @@
+#include <darling-config.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/misc/proc_info.h>
 
 #define PRIVATE 1
@@ -175,7 +176,7 @@ static char fakeuuid[16];
 static long _proc_pidonfo_uniqinfo(int32_t pid, void* buffer, int32_t bufsize)
 {
 #ifndef VARIANT_DYLD
-	char path[64], stat[1024];
+	char path[128], stat[1024];
 	char *statptr;
 	const char* elem;
 	unsigned long long starttime;
@@ -195,7 +196,7 @@ static long _proc_pidonfo_uniqinfo(int32_t pid, void* buffer, int32_t bufsize)
 	// Read info for pid    //
 	//////////////////////////
 
-	__simple_sprintf(path, "/proc/%d/stat", pid);
+	__simple_sprintf(path, DARLING_PROCFS_PATH "/%d/stat", pid);
 	if (!read_string(path, stat, sizeof(stat)))
 		return -ESRCH;
 
@@ -222,7 +223,7 @@ static long _proc_pidonfo_uniqinfo(int32_t pid, void* buffer, int32_t bufsize)
 	// Read info for ppid   //
 	//////////////////////////
 
-	__simple_sprintf(path, "/proc/%d/stat", ppid);
+	__simple_sprintf(path, DARLING_PROCFS_PATH "/%d/stat", ppid);
 	if (!read_string(path, stat, sizeof(stat)))
 		return -ESRCH;
 
@@ -280,11 +281,11 @@ static long _proc_pidinfo_tbsdinfo(int32_t pid, void* buffer, int32_t bufsize)
 	info->pbi_svgid = shortinfo.pbsi_svgid;
 	info->pbi_pgid = shortinfo.pbsi_pgid;
 
-	char path[64], stat[4096];
+	char path[128], stat[4096];
 	char *statptr;
 	const char* elem;
 
-	__simple_sprintf(path, "/proc/%d/stat", pid);
+	__simple_sprintf(path, DARLING_PROCFS_PATH "/%d/stat", pid);
 	if (!read_string(path, stat, sizeof(stat)))
 		return -ESRCH;
 
@@ -302,7 +303,7 @@ static long _proc_pidinfo_tbsdinfo(int32_t pid, void* buffer, int32_t bufsize)
 	uint64_t starttime = __simple_atoi(elem, NULL);
 
 	struct rdline_buffer rbuf;
-	int statfd = sys_open("/proc/stat", BSD_O_RDONLY, 0);
+	int statfd = sys_open(DARLING_PROCFS_PATH "/stat", BSD_O_RDONLY, 0);
 
 	if (statfd < 0)
 		return -ESRCH;
@@ -345,7 +346,7 @@ reterr:
 
 static long _proc_pidinfo_pidthreadinfo(int32_t pid, uint64_t thread_handle, void* buffer, int32_t bufsize)
 {
-	char path[64], stat[1024];
+	char path[128], stat[1024];
 	int32_t tid = (int32_t)(thread_handle & 0xffffffff);
 
 	// __simple_printf("Asking for pid/tid %d/%d\n", pid, tid);
@@ -356,7 +357,7 @@ static long _proc_pidinfo_pidthreadinfo(int32_t pid, uint64_t thread_handle, voi
 
 	memset(buffer, 0, bufsize);
 
-	__simple_sprintf(path, "/proc/%d/task/%d/comm", pid, tid);
+	__simple_sprintf(path, DARLING_PROCFS_PATH "/%d/task/%d/comm", pid, tid);
 	// __simple_printf("Reading thread name from %s\n", path);
 	if (!read_string(path, info->pth_name, sizeof(info->pth_name)))
 		return -ESRCH;
@@ -374,7 +375,7 @@ static long _proc_pidinfo_pidthreadinfo(int32_t pid, uint64_t thread_handle, voi
 
 static long _proc_pidinfo_shortbsdinfo(int32_t pid, void* buffer, int32_t bufsize)
 {
-	char path[64], stat[1024];
+	char path[128], stat[1024];
 	char *statptr;
 	const char* elem;
 	static int uid = -1;
@@ -386,7 +387,7 @@ static long _proc_pidinfo_shortbsdinfo(int32_t pid, void* buffer, int32_t bufsiz
 
 	memset(buffer, 0, bufsize);
 
-	__simple_sprintf(path, "/proc/%d/stat", pid);
+	__simple_sprintf(path, DARLING_PROCFS_PATH "/%d/stat", pid);
 	if (!read_string(path, stat, sizeof(stat)))
 		return -ESRCH;
 
@@ -452,10 +453,10 @@ reterr:
 }
 
 static long _proc_pidinfo_regionpath_setup(int32_t pid, struct rdline_buffer* buf) {
-	char proc_path[50];
+	char proc_path[128];
 	int fd;
 
-	__simple_sprintf(proc_path, "/proc/%d/smaps", pid);
+	__simple_sprintf(proc_path, DARLING_PROCFS_PATH "/%d/smaps", pid);
 	fd = sys_open_nocancel(proc_path, BSD_O_RDONLY, 0);
 	if (fd < 0)
 		return fd;
@@ -690,14 +691,14 @@ static long _proc_pidinfo_taskinfo(int32_t pid, void* buffer, int32_t bufsize)
 	if (bufsize < sizeof(struct proc_taskinfo))
 		return -ENOSPC;
 
-	char path[64], stat[1024];
+	char path[128], stat[1024];
 	char *statptr;
 	const char* elem;
 
 	memset(buffer, 0, bufsize);
 	struct proc_taskinfo* ti = (struct proc_taskinfo*) buffer;
 
-	__simple_sprintf(path, "/proc/%d/stat", pid);
+	__simple_sprintf(path, DARLING_PROCFS_PATH "/%d/stat", pid);
 	if (!read_string(path, stat, sizeof(stat)))
 		return -ESRCH;
 
@@ -797,9 +798,9 @@ static long _proc_pidinfo_listthreads(int32_t pid, void* buffer, int32_t bufsize
 	int fd, ret;
 	long basep = 0;
 	char dents[256];
-	char path[64];
+	char path[128];
 
-	__simple_sprintf(path, "/proc/%d/task", pid);
+	__simple_sprintf(path, DARLING_PROCFS_PATH "/%d/task", pid);
 
 	fd = sys_open_nocancel(path, BSD_O_RDONLY | BSD_O_DIRECTORY, 0);
 	if (fd < 0)

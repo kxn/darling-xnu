@@ -1,3 +1,4 @@
+#include <darling-config.h>
 #include <darling/emulation/xnu_syscall/bsd/helper/misc/sysctl_proc.h>
 
 #include <sys/sysctl.h>
@@ -53,7 +54,7 @@ int _sysctl_proc(int what, int flag, struct kinfo_proc* out, unsigned long* bufl
 	if (*buflen > 0 && out == NULL)
 		return -EFAULT;
 
-	fd = sys_open_nocancel("/proc", BSD_O_RDONLY | BSD_O_DIRECTORY, 0);
+	fd = sys_open_nocancel(DARLING_PROCFS_PATH, BSD_O_RDONLY | BSD_O_DIRECTORY, 0);
 	if (fd < 0)
 		return fd;
 
@@ -184,14 +185,14 @@ void skip_stat_elems(char** buf, int count)
 
 static struct kinfo_proc_chain* load_proc(const char* name, int what, int flag)
 {
-	char path[56];
+	char path[128];
 	char stat[1024];
 	char *statptr;
 	const char* elem;
 	struct kinfo_proc_chain* kinfo;
 	static int uid = -1, gid = -1;
 
-	__simple_sprintf(path, "/proc/%s/stat", name);
+	__simple_sprintf(path, DARLING_PROCFS_PATH "/%s/stat", name);
 
 	kinfo = (struct kinfo_proc_chain*) malloc(sizeof(*kinfo));
 	memset(kinfo, 0, sizeof(*kinfo));
@@ -337,12 +338,12 @@ static void free_chain(struct kinfo_proc_chain* chain)
 
 int _sysctl_procargs(int pid, char* buf, unsigned long* buflen)
 {
-	char path[56];
+	char path[128];
 	char cmdline[2048];
 	int argc = 0, i, arg0len = 0, argslen = 0;
 	int totallen, ret = 0;
 
-	__simple_sprintf(path, "/proc/%d/cmdline", pid);
+	__simple_sprintf(path, DARLING_PROCFS_PATH "/%d/cmdline", pid);
 
 	if (!read_string(path, cmdline, sizeof(cmdline)))
 		return -ENOTDIR;
@@ -352,7 +353,7 @@ int _sysctl_procargs(int pid, char* buf, unsigned long* buflen)
 		int len;
 
 		// Provide comm instead
-		__simple_sprintf(path, "/proc/%d/comm", pid);
+		__simple_sprintf(path, DARLING_PROCFS_PATH "/%d/comm", pid);
 		
 		if (!read_string(path, cmdline, sizeof(cmdline)))
 			return -ENOTDIR;

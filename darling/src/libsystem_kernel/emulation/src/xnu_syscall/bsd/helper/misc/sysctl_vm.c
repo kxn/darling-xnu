@@ -1,3 +1,4 @@
+#include <darling-config.h>
 #include <darling/emulation/xnu_syscall/bsd/helper/misc/sysctl_vm.h>
 
 #include <errno.h>
@@ -63,7 +64,7 @@ static bool parse_meminfo_line(const char* line, const char* key, size_t key_len
 };
 
 static int read_meminfo(struct meminfo* out_info) {
-	int infofd = sys_open_nocancel("/proc/meminfo", BSD_O_RDONLY, 0);
+	int infofd = sys_open_nocancel(DARLING_PROCFS_PATH "/meminfo", BSD_O_RDONLY, 0);
 	struct rdline_buffer rbuf;
 	const char* line;
 	int status = 0;

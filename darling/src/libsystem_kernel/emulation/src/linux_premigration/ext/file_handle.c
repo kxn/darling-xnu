@@ -1,3 +1,4 @@
+#include <darling-config.h>
 #include <darling/emulation/linux_premigration/ext/file_handle.h>
 
 #include <sys/errno.h>
@@ -99,7 +100,7 @@ int sys_handle_to_name(RefData* ref, char name[4096])
 	struct simple_readline_buf rbuf;
 	char line[1024];
 
-	int fd_m = sys_open("/proc/self/mountinfo", BSD_O_RDONLY, 0);
+	int fd_m = sys_open(DARLING_PROCFS_PATH "/self/mountinfo", BSD_O_RDONLY, 0);
 	if (fd_m < 0)
 		return fd_m;
 	const char* mount_path = NULL;
@@ -183,7 +184,7 @@ int sys_open_by_handle(RefData* ref, int flags)
 	struct simple_readline_buf rbuf;
 	char line[1024];
 
-	int fd_m = sys_open("/proc/self/mountinfo", BSD_O_RDONLY, 0);
+	int fd_m = sys_open(DARLING_PROCFS_PATH "/self/mountinfo", BSD_O_RDONLY, 0);
 	if (fd_m < 0)
 		return fd_m;
 	const char* mount_path = NULL;

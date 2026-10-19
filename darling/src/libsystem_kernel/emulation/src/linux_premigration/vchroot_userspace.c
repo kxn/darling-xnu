@@ -1,3 +1,4 @@
+#include <darling-config.h>
 
 #include <darling/emulation/linux_premigration/vchroot_expand.h>
 #ifdef TEST
@@ -426,10 +427,21 @@ done_getdents:
 
 							link[rv] = '\0';
 
+                            const size_t private_proc_length = sizeof(DARLING_PROCFS_PATH) - 1;
+                            const bool private_proc_link = prefix_path_len >= 0
+                                && ctxt->current_path_len >= prefix_path_len + private_proc_length
+                                && strncmp(ctxt->current_path, prefix_path, prefix_path_len) == 0
+                                && strncmp(ctxt->current_path + prefix_path_len, DARLING_PROCFS_PATH, private_proc_length) == 0
+                                && (ctxt->current_path[prefix_path_len + private_proc_length] == '/'
+                                    || ctxt->current_path[prefix_path_len + private_proc_length] == '\0');
+                            const bool proc_link = private_proc_link
+                                || (strncmp(ctxt->current_path, "/proc", 5) == 0
+                                    && (ctxt->current_path[5] == '/' || ctxt->current_path[5] == '\0'));
+
 							// https://github.com/darlinghq/darling/issues/916
 							// Special procfs hack due to the presence of broken symlinks in /proc/xxx/fd/ used to
 							// point to sockets, pipes or anonymous inodes.
-							if (strncmp(ctxt->current_path, "/proc", 5) == 0)
+							if (proc_link)
 							{
 								if (strchr(link, ':') != 0)
 								{
@@ -456,7 +468,12 @@ done_getdents:
 							// however, DON'T resolve `/proc` symlinks within the prefix.
 							// anything under `/proc` is from Linux's `/proc` since we bind-mount it, so we can special-case them because we want those to be Linux-root relative.
 							// see https://github.com/darlinghq/darling/issues/1052 for the issue this works around.
-							if (link[0] == '/' && !(strncmp(link, "/proc/", 6) == 0 || (rv == 5 && strncmp(link, "/proc", 5) == 0))) {
+                            if (proc_link && link[0] == '/') {
+                                // procfs targets are physical Linux paths, including
+                                // files already unlinked but retained by an open FD.
+                                ctxt->current_root = "";
+                                ctxt->current_root_len = 0;
+                            } else if (link[0] == '/' && !(strncmp(link, "/proc/", 6) == 0 || (rv == 5 && strncmp(link, "/proc", 5) == 0))) {
 								ctxt->current_root = prefix_path;
 								ctxt->current_root_len = prefix_path_len;
 							}

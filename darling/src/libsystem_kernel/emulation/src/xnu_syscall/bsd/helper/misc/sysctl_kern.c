@@ -1,3 +1,4 @@
+#include <darling-config.h>
 #include <darling/emulation/xnu_syscall/bsd/helper/misc/sysctl_kern.h>
 
 #include <sys/errno.h>
@@ -245,7 +246,7 @@ sysctl_handler(handle_domainname)
 sysctl_handler(handle_maxproc)
 {
 	char buf[16];
-	int fd = sys_open("/proc/sys/kernel/pid_max", BSD_O_RDONLY, 0);
+	int fd = sys_open(DARLING_PROCFS_PATH "/sys/kernel/pid_max", BSD_O_RDONLY, 0);
 	int value = 1024;
 	int* ovalue = (int*) old;
 	
