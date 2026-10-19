@@ -17,6 +17,7 @@
 #include <darling/emulation/xnu_syscall/bsd/impl/fcntl/open.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/unistd/read.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/unistd/close.h>
+#include <darling/emulation/xnu_syscall/bsd/helper/misc/readline.h>
 #include <darling/emulation/linux_premigration/elfcalls_wrapper.h>
 
 #include <darling-config.h>
@@ -52,6 +53,7 @@ extern int _sysctl_proc(int what, int flag, struct kinfo_proc* out, unsigned lon
 extern int _sysctl_procargs(int pid, char* buf, unsigned long* buflen);
 extern int strlcpy(char* dst, const char* src, __SIZE_TYPE__ dst_size);
 extern __SIZE_TYPE__ strlen(const char* str);
+extern int strncmp(const char* a, const char* b, __SIZE_TYPE__ length);
 
 const struct known_sysctl sysctls_kern_sysv[] = {
 	{ .oid = _KERN_SEMMNS, .type = CTLTYPE_INT, .exttype = "I", .name = "semmns", .handler = handle_sysv_semmns },
@@ -137,29 +139,42 @@ sysctl_handler(handle_argmax)
 
 sysctl_handler(handle_boottime)
 {
-	// Fill in struct timeval { tv_sec, tv_usec }
-	struct sysinfo info;
-	struct bsd_timeval* tv;
-
-	if (__linux_sysinfo(&info) == -1)
-		return -errno;
-
-	tv = (struct bsd_timeval*) old;
-	if (tv != NULL)
-	{
-		if (*oldlen < sizeof(*tv))
-			return -EINVAL;
-		sys_gettimeofday(tv, NULL);
-
-		tv->tv_sec -= info.uptime;
-
-		// we don't want the microseconds to be constantly jumping around
-		// (that actually causes an infinite loop in `_mach_boottime_usec` in libc)
-		// but Linux doesn't give us microseconds, so just settle for 0
-		tv->tv_usec = 0;
+	struct bsd_timeval* tv = (struct bsd_timeval*)old;
+	if (!oldlen)
+		return -EINVAL;
+	if (!tv) {
+		*oldlen = sizeof(*tv);
+		return 0;
 	}
+	if (*oldlen < sizeof(*tv))
+		return -EINVAL;
+
+	// Rounded sysinfo uptime subtracted from a fresh wall clock makes the
+	// reported epoch jump by a second. libc's CLOCK_MONOTONIC fallback then
+	// moves backwards. Use the same actual Linux boot epoch as proc_pidinfo.
+	// Linux exposes btime at second precision; retain that stable value.
+	int fd = sys_open(DARLING_PROCFS_PATH "/stat", BSD_O_RDONLY, 0);
+	if (fd < 0)
+		return fd;
+	struct rdline_buffer buffer;
+	_readline_init(&buffer);
+	const char* line;
+	unsigned long long boot = 0;
+	while ((line = _readline(fd, &buffer)) != NULL) {
+		if (strncmp(line, "btime ", 6) == 0) {
+			const char* end;
+			boot = __simple_atoi(line + 6, &end);
+			if (end == line + 6 || *end != '\0')
+				boot = 0;
+			break;
+		}
+	}
+	close_internal(fd);
+	if (!boot)
+		return -EIO;
+	tv->tv_sec = boot;
+	tv->tv_usec = 0;
 	*oldlen = sizeof(*tv);
-	
 	return 0;
 }
 
