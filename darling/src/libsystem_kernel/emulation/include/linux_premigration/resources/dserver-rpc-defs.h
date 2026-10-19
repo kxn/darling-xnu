@@ -85,8 +85,16 @@ static long int dserver_rpc_hooks_send_message(int socket, const dserver_rpc_hoo
 
 static long int dserver_rpc_hooks_receive_message(int socket, dserver_rpc_hooks_msghdr_t* out_message) {
 	long int ret = 0;
+	const __typeof__(out_message->msg_controllen) control_capacity = out_message->msg_controllen;
+	const __typeof__(out_message->msg_namelen) name_capacity = out_message->msg_namelen;
 
 retry:
+	/* recvmsg reports used lengths in these fields. An S2C operation without
+	 * descriptors sets controllen to zero; restore the buffer capacity before
+	 * receiving a subsequent operation that transfers an mmap backing FD. */
+	out_message->msg_controllen = control_capacity;
+	out_message->msg_namelen = name_capacity;
+	out_message->msg_flags = 0;
 #ifdef __NR_socketcall
 	ret = LINUX_SYSCALL(__NR_socketcall, LINUX_SYS_RECVMSG, ((long[6]) { socket, out_message, 0 }));
 #else
