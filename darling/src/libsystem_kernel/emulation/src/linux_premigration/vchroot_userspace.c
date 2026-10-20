@@ -73,6 +73,15 @@ extern int memcmp(const void* dest, const void* src, __SIZE_TYPE__ n);
 
 #endif
 
+// Embed only the reachable allocation-free normalization implementation. All
+// utf8proc symbols have internal linkage; no new libsystem exports or heap calls.
+#define UTF8PROC_STATIC
+#define UTF8PROC_DLLEXPORT static
+#define DARLING_UTF8PROC_PRIVATE
+#include "utf8proc/utf8proc.c"
+#undef UTF8PROC_DLLEXPORT
+#undef DARLING_UTF8PROC_PRIVATE
+
 static bool next_component(const char* from, const char** end);
 
 static char prefix_path[4096] = {0}; // MUST NOT end with '/'
@@ -109,6 +118,68 @@ struct context
 };
 
 static int vchroot_run(const char* path, struct context* ctxt);
+
+// Exact Linux lookups always take precedence. On a miss, resolve canonical
+// Unicode spellings (NFD), retaining the existing ASCII case-insensitive match.
+// Buffers are bounded and the helper is not inlined into symlink recursion.
+// A Linux directory entry is at most 255 bytes; 1024 scalar slots also cover
+// its maximum canonical decomposition. Invalid UTF-8 remains byte-oriented.
+static __attribute__((noinline)) int vchroot_matching_component(struct context* ctxt, int offset)
+{
+    utf8proc_int32_t wanted[1024], candidate[1024];
+    const char* component = ctxt->current_path + offset;
+    const unsigned options = UTF8PROC_STABLE | UTF8PROC_DECOMPOSE;
+    utf8proc_ssize_t wanted_len = utf8proc_decompose((const utf8proc_uint8_t*)component,
+        strlen(component), wanted, 1024, options);
+    bool normalize = wanted_len > 0 && wanted_len <= 1024;
+    if (!icase_enabled && !normalize) return 0;
+
+    ctxt->current_path[offset - 1] = 0;
+#if defined(__NR_open)
+    int dfd = LINUX_SYSCALL(__NR_open, offset > 1 ? ctxt->current_path : "/", LINUX_O_RDONLY);
+#else
+    int dfd = LINUX_SYSCALL(__NR_openat, LINUX_AT_FDCWD, offset > 1 ? ctxt->current_path : "/", LINUX_O_RDONLY);
+#endif
+    ctxt->current_path[offset - 1] = '/';
+    if (dfd < 0) return 0;
+    char selected[256];
+    int matches = 0, received;
+    while ((received = LINUX_SYSCALL(__NR_getdents64, dfd, ctxt->dirents, sizeof(ctxt->dirents))) > 0) {
+        for (int pos = 0; pos < received;) {
+            struct linux_dirent64* de = (struct linux_dirent64*)&ctxt->dirents[pos];
+            // The kernel supplies these records, but never walk a partial one.
+            if (de->d_reclen <= offsetof(struct linux_dirent64, d_name) || pos + de->d_reclen > received) {
+                matches = -1;
+                goto finished;
+            }
+            bool equal = icase_enabled && strcasecmp(de->d_name, component) == 0;
+            if (!equal && normalize) {
+                utf8proc_ssize_t count = utf8proc_decompose((const utf8proc_uint8_t*)de->d_name,
+                    strlen(de->d_name), candidate, 1024, options);
+                equal = count == wanted_len && count > 0 && count <= 1024
+                    && memcmp(wanted, candidate, count * sizeof(*wanted)) == 0;
+            }
+            if (equal) {
+                // Linux permits canonical aliases. Never pick an arbitrary file
+                // if a non-exact request can name more than one directory entry.
+                if (++matches > 1) goto finished;
+                strcpy(selected, de->d_name);
+            }
+            pos += de->d_reclen;
+        }
+    }
+    if (received < 0) matches = -1;
+finished:
+    LINUX_SYSCALL(__NR_close, dfd);
+    if (matches > 1 || matches < 0) return -LINUX_ENOENT;
+    if (matches == 0) return 0;
+    size_t length = strlen(selected);
+    if (offset + length + 1 > sizeof(ctxt->current_path)) return -LINUX_ENAMETOOLONG;
+    memcpy(ctxt->current_path + offset, selected, length + 1);
+    ctxt->current_path_len = offset + length;
+    return 1;
+}
+
 
 int vchroot_copy_path(struct vchroot_expand_args* args,const char* path)
 {
@@ -362,52 +433,24 @@ static int vchroot_run(const char* input_path, struct context* ctxt)
 						#endif
 					#endif
 
-					if (icase_enabled && status == -LINUX_ENOENT)
-					{
-						// Case insensitive search
-
-						// Examine the directory above
-						ctxt->current_path[prevlen-1] = '\0';
-						
-						#if defined(__NR_open)
-							int dfd = LINUX_SYSCALL(__NR_open, (prevlen > 1) ? ctxt->current_path : "/", LINUX_O_RDONLY);
-						#else
-							int dfd = LINUX_SYSCALL(__NR_openat, LINUX_AT_FDCWD, (prevlen > 1) ? ctxt->current_path : "/", LINUX_O_RDONLY);
-						#endif
-						char* dirents=ctxt->dirents;
-						int len;
-
-						if (dfd < 0)
-						{
-							ctxt->unknown_component = true;
-							goto done_getdents;
-						}
-						
-						// Get a batch of directory entries
-						while ((len = LINUX_SYSCALL(__NR_getdents64, dfd, dirents, sizeof(ctxt->dirents))) > 0)
-						{
-							int pos = 0;
-
-							// Iterate through directory entries
-							while (pos < len)
-							{
-								struct linux_dirent64* de = (struct linux_dirent64*) &dirents[pos];
-								if (strcasecmp(de->d_name, ctxt->current_path + prevlen) == 0)
-								{
-									// Fix up the case and be done with it
-									strcpy(ctxt->current_path + prevlen, de->d_name);
-									goto done_getdents;
-								}
-								pos += de->d_reclen;
-							}
-						}
-						ctxt->unknown_component = true;
-done_getdents:
-						// Restore the / we removed a few lines above
-						ctxt->current_path[prevlen-1] = '/';
-						LINUX_SYSCALL(__NR_close, dfd);
-					}
-					else if (status == 0 && (st.st_mode & LINUX_S_IFMT) == LINUX_S_IFLNK)
+                    if (status == -LINUX_ENOENT || status == -LINUX_ENAMETOOLONG)
+                    {
+                        int matched = vchroot_matching_component(ctxt, prevlen);
+                        if (matched < 0) return matched;
+                        if (!matched) ctxt->unknown_component = true;
+                        else {
+#if defined(__NR_lstat)
+                            status = LINUX_SYSCALL(__NR_lstat, ctxt->current_path, &st);
+#else
+#if __NR_newfstatat
+                            status = LINUX_SYSCALL(__NR_newfstatat, LINUX_AT_FDCWD, ctxt->current_path, &st, LINUX_AT_SYMLINK_NOFOLLOW);
+#else
+                            status = LINUX_SYSCALL(__NR_fstatat64, LINUX_AT_FDCWD, ctxt->current_path, &st, LINUX_AT_SYMLINK_NOFOLLOW);
+#endif
+#endif
+                        }
+                    }
+					if (status == 0 && (st.st_mode & LINUX_S_IFMT) == LINUX_S_IFLNK)
 					{
 						// Follow symlink if follow is true or if we haven't reached the end of the input path yet
 						if (ctxt->follow || *end)
