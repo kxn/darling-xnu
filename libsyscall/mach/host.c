@@ -33,6 +33,16 @@
 #include <mach/host_priv.h>
 #include <sys/types.h>
 
+#ifdef DARLING
+/* New SDK spelling of the same mach_host subsystem routine (message 205).
+ * Keep the old MIG entry point for callers built against older SDKs. */
+kern_return_t
+host_get_io_main(host_t host, mach_port_t *io_main)
+{
+	return host_get_io_master(host, io_main);
+}
+#endif
+
 kern_return_t
 host_get_atm_diagnostic_flag(host_t host __unused,
     uint32_t *diagnostic_flag)
