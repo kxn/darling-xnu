@@ -810,3 +810,21 @@ kern_return_t mk_timer_cancel_impl(mach_port_name_t name, uint64_t *result_time)
 
 	return code;
 }
+
+/* RPC transport for the x86_64 mach_msg2 register ABI. */
+__attribute__((visibility("hidden")))
+mach_msg_return_t __darling_mach_msg2_rpc(void *data, uint64_t options,
+    uint64_t bits_size, uint64_t remote_local, uint64_t voucher_id,
+    uint64_t descriptors_receive, uint64_t receive_priority, uint64_t timeout)
+{
+    int code = dserver_rpc_mach_msg2((uint64_t)data, options, bits_size,
+        remote_local, voucher_id, descriptors_receive, receive_priority, timeout);
+    if (code == -LINUX_EINTR) {
+        return (options & MACH_SEND_MSG) ? MACH_SEND_INTERRUPTED : MACH_RCV_INTERRUPTED;
+    }
+    if (code < 0) {
+        __simple_printf("mach_msg2 failed (internally): %d\n", code);
+        __simple_abort();
+    }
+    return code;
+}

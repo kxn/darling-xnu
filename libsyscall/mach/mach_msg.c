@@ -68,6 +68,46 @@ extern int proc_importance_assertion_complete(uint64_t assertion_handle);
 
 #define LIBMACH_OPTIONS (MACH_SEND_INTERRUPT|MACH_RCV_INTERRUPT)
 
+#ifdef DARLING
+/* Restart behavior follows Apple XNU f6217f891ac0bb64f3d375211650a4c1ff8ca1ea,
+ * libsyscall/mach/mach_msg.c. The paired server handles captured headers and
+ * checks 64-bit options; it never truncates unsupported options to old bits. */
+__attribute__((visibility("hidden")))
+extern mach_msg_return_t __darling_mach_msg2_rpc(void *, uint64_t, uint64_t,
+    uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+
+mach_msg_return_t
+mach_msg2_internal(void *data, uint64_t options, uint64_t bits_size,
+    uint64_t remote_local, uint64_t voucher_id, uint64_t descriptors_receive,
+    uint64_t receive_priority, uint64_t timeout)
+{
+    mach_msg_return_t mr = __darling_mach_msg2_rpc(data,
+        options & ~(uint64_t)LIBMACH_OPTIONS, bits_size, remote_local,
+        voucher_id, descriptors_receive, receive_priority, timeout);
+    if (mr == MACH_MSG_SUCCESS) return mr;
+    if (!(options & MACH_SEND_INTERRUPT)) {
+        while (mr == MACH_SEND_INTERRUPTED) {
+            mr = __darling_mach_msg2_rpc(data, options & ~(uint64_t)LIBMACH_OPTIONS,
+                bits_size, remote_local, voucher_id, descriptors_receive,
+                receive_priority, timeout);
+        }
+    }
+    if (!(options & MACH_RCV_INTERRUPT)) {
+        while (mr == MACH_RCV_INTERRUPTED) {
+            uint64_t receive_options = options;
+            if ((options & MACH_SEND_MSG) && (options & MACH_RCV_MSG))
+                receive_options &= ~(uint64_t)MACH_RCV_SYNC_WAIT;
+            receive_options &= ~(uint64_t)(LIBMACH_OPTIONS | MACH_SEND_MSG);
+            mr = __darling_mach_msg2_rpc(data, receive_options,
+                bits_size & 0xffffffffull, remote_local, voucher_id,
+                descriptors_receive, receive_priority, timeout);
+        }
+    }
+    return mr;
+}
+#endif
+
+
 /*
  *	Routine:	mach_msg
  *	Purpose:
