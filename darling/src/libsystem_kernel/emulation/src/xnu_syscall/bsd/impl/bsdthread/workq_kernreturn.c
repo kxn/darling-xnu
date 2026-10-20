@@ -320,36 +320,54 @@ resume_thread: // we want the thread to resume, but it might be just to die
 #endif
 }
 
+// Nonnegative token count. Never overwrite a concurrently posted token with a
+// waiter sentinel: a parked thread could otherwise time out after dequeue and
+// remove its stack entry twice. FUTEX_WAIT compares against zero atomically.
 int sem_down(int* sem, int timeout)
 {
-	int result;
-	struct timespec ts = { timeout, 0 };
-
-try_again:
-	result = __sync_add_and_fetch(sem, -1);
-	if (result < 0)
-	{
-		*sem = -1;
-		result = __linux_futex(sem, FUTEX_WAIT, -1, (timeout != -1) ? &ts : NULL, 0, 0);
-
-		if (result == -1)
+	struct timespec deadline, now, remaining;
+	if (timeout >= 0) {
+		if (LINUX_SYSCALL(__NR_clock_gettime, 1 /* CLOCK_MONOTONIC */, &deadline) < 0)
 			return 0;
-
-		goto try_again;
+		deadline.tv_sec += timeout;
 	}
 
-	return 1;
+	for (;;) {
+		int tokens = __atomic_load_n(sem, __ATOMIC_ACQUIRE);
+		while (tokens > 0) {
+			if (__atomic_compare_exchange_n(sem, &tokens, tokens - 1, true,
+				__ATOMIC_ACQUIRE, __ATOMIC_RELAXED))
+				return 1;
+		}
+
+		const struct timespec* wait = NULL;
+		if (timeout >= 0) {
+			if (LINUX_SYSCALL(__NR_clock_gettime, 1, &now) < 0)
+				return 0;
+			remaining.tv_sec = deadline.tv_sec - now.tv_sec;
+			remaining.tv_nsec = deadline.tv_nsec - now.tv_nsec;
+			if (remaining.tv_nsec < 0) {
+				remaining.tv_nsec += 1000000000;
+				remaining.tv_sec--;
+			}
+			if (remaining.tv_sec < 0 || (!remaining.tv_sec && !remaining.tv_nsec))
+				return 0;
+			wait = &remaining;
+		}
+
+		int result = __linux_futex_reterr(sem, FUTEX_WAIT, 0, wait, NULL, 0);
+		if (result == 0 || result == -EAGAIN || result == -EINTR)
+			continue;
+		return 0;
+	}
 }
 
 void sem_up(int* sem)
 {
-	int result;
-	result = __sync_add_and_fetch(sem, 1);
-	if (result == 0)
-	{
-		*sem = 1;
-		__linux_futex(sem, FUTEX_WAKE, 1, NULL, 0, 0);
-	}
+	__atomic_fetch_add(sem, 1, __ATOMIC_RELEASE);
+	// Each post can release a different waiter, including when another credit
+	// remains unconsumed. Always wake one instead of inspecting a racy sentinel.
+	__linux_futex_reterr(sem, FUTEX_WAKE, 1, NULL, NULL, 0);
 }
 
 #define __PTHREAD_PRIORITY_CBIT_USER_INTERACTIVE 0x20
