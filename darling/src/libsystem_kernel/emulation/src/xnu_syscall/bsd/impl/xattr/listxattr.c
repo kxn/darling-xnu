@@ -1,3 +1,4 @@
+#include <darling/emulation/xnu_syscall/bsd/helper/misc/quarantine.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/xattr/listxattr.h>
 
 #include <darling/emulation/common/base.h>
@@ -22,13 +23,5 @@ long sys_listxattr(const char* path, char* namebuf, unsigned long size, int opti
 	if (ret < 0)
 		return errno_linux_to_bsd(ret);
 
-	if (options & XATTR_NOFOLLOW)
-		ret = LINUX_SYSCALL(__NR_llistxattr, path, namebuf, size);
-	else
-		ret = LINUX_SYSCALL(__NR_listxattr, path, namebuf, size);
-
-	if (ret < 0)
-		return errno_linux_to_bsd(ret);
-
-	return ret;
+	return darwin_xattr_list(vc.path, -1, options & XATTR_NOFOLLOW, namebuf, size);
 }

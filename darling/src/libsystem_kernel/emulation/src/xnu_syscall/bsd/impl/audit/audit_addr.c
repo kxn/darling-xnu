@@ -1,44 +1,22 @@
 #include <darling/emulation/xnu_syscall/bsd/impl/audit/audit_addr.h>
+#include <darling/emulation/conversion/errno.h>
+#include <darlingserver/rpc.h>
+#include <darlingserver/audit-session.h>
+#include <stddef.h>
 
-#include <os/lock.h>
+_Static_assert(sizeof(auditinfo_addr_t)==sizeof(darling_audit_info_t), "Intel audit wire size");
+_Static_assert(offsetof(auditinfo_addr_t,ai_asid)==offsetof(darling_audit_info_t,asid), "audit ID offset");
+_Static_assert(offsetof(auditinfo_addr_t,ai_flags)==offsetof(darling_audit_info_t,flags), "audit flags offset");
 
-#include <darling/emulation/xnu_syscall/bsd/impl/unistd/geteuid.h>
-#include <darling/emulation/xnu_syscall/bsd/impl/misc/getentropy.h>
+// Server-owned process state survives exec and is inherited at actual fork.
+// Copying is performed by the server's checked process-memory interface,
+// preserving partial-length copy semantics without dereferencing guest pointers.
+long sys_getaudit_addr(struct auditinfo_addr* info, int length) {
+    int result=dserver_rpc_audit_info(0,info,(uint32_t)length);
+    return result<0 ? errno_linux_to_bsd(result) : result;
+}
 
-#define min(a, b) ((a < b) ? a : b)
-
-extern void* memcpy(void* dest, const void* src, __SIZE_TYPE__ n);
-
-// global variable because we need to inherit this across child processes
-static auditinfo_addr_t info = {
-	.ai_auid = AU_DEFAUDITID,
-	.ai_mask = {0},
-	.ai_termid = { .at_type = AU_IPv4 },
-	.ai_asid = AU_DEFAUDITSID,
-	.ai_flags = 0,
-};
-// should be a rw lock but *shrug*
-static os_unfair_lock info_lock = OS_UNFAIR_LOCK_INIT;
-
-long sys_getaudit_addr(struct auditinfo_addr* auditinfo_addr, int length) {
-	os_unfair_lock_lock(&info_lock);
-
-	memcpy(auditinfo_addr, &info, min(length, sizeof(auditinfo_addr_t)));
-
-	os_unfair_lock_unlock(&info_lock);
-	return 0;
-};
-
-long sys_setaudit_addr(struct auditinfo_addr* auditinfo_addr, int length) {
-	os_unfair_lock_lock(&info_lock);
-
-	memcpy(&info, auditinfo_addr, min(length, sizeof(auditinfo_addr_t)));
-
-	if (info.ai_asid == AU_ASSIGN_ASID) {
-		// generate a new session ID
-		sys_getentropy(&info.ai_asid, sizeof(info.ai_asid));
-	}
-
-	os_unfair_lock_unlock(&info_lock);
-	return 0;
-};
+long sys_setaudit_addr(struct auditinfo_addr* info, int length) {
+    int result=dserver_rpc_audit_info(1,info,(uint32_t)length);
+    return result<0 ? errno_linux_to_bsd(result) : result;
+}

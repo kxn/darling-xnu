@@ -78,6 +78,14 @@ long sys_fcntl_nocancel(int fd, int cmd, long arg)
 
 	switch (cmd)
 	{
+
+		case F_NOCACHE: {
+			/* A real per-open-file one-pass cache hint. NOREUSE preserves
+			 * unaligned I/O; O_DIRECT would change the read/write contract.
+			 * This does not claim Darwin's exact cache-bypass behavior. */
+			ret = LINUX_SYSCALL(__NR_fadvise64, fd, 0, 0, arg ? 5 : 0);
+			return ret < 0 ? errno_linux_to_bsd(ret) : ret;
+		}
 		case F_CHECK_LV:
 			return 0;
 		case F_SETFD:

@@ -16,7 +16,8 @@ long sys_removexattr(const char* path, const char* name, int options)
 {
 	int ret;
 	const char *linux_name;
-	ret = quarantine_xattr_name(name, &linux_name, 0);
+	char attribute_name[256];
+	ret = darwin_xattr_name(name, &linux_name, 0, attribute_name);
 	if (ret < 0) return ret;
 	struct vchroot_expand_args vc;
 	vc.flags=(options & 1)?0:VCHROOT_FOLLOW;vc.dfd=get_perthread_wd();strcpy(vc.path,path);
@@ -30,7 +31,7 @@ long sys_removexattr(const char* path, const char* name, int options)
 	if (ret == -LINUX_ENODATA) return -ENOATTR;
 	if (ret < 0)
 		return errno_linux_to_bsd(ret);
-	quarantine_removed_path(vc.dfd,vc.path,options&1,name);
+	quarantine_removed_path(vc.dfd,vc.path,options&1,linux_name+5);
 
 	return ret;
 }

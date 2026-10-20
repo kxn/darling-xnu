@@ -1,3 +1,4 @@
+#include <darling/emulation/xnu_syscall/bsd/helper/misc/quarantine.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/xattr/flistxattr.h>
 
 #include <sys/stat.h>
@@ -42,13 +43,10 @@ long sys_flistxattr(int fd, char* namebuf, unsigned long size, int options)
 		if (ret < 0)
 			return errno_linux_to_bsd(ret);
 		path[ret] = '\0';
-		ret = LINUX_SYSCALL(__NR_llistxattr, path, namebuf, size);
+		ret = darwin_xattr_list(path, -1, 1, namebuf, size);
 	} else {
-		ret = LINUX_SYSCALL(__NR_flistxattr, fd, namebuf, size);
+		ret = darwin_xattr_list(0, fd, 0, namebuf, size);
 	}
-
-	if (ret < 0)
-		return errno_linux_to_bsd(ret);
 
 	return ret;
 }

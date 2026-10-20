@@ -19,7 +19,8 @@ long sys_getxattr(const char* path, const char* name, char* value,
 {
 	int ret;
 	const char *linux_name;
-	ret = quarantine_xattr_name(name, &linux_name, 0);
+	char attribute_name[256];
+	ret = darwin_xattr_name(name, &linux_name, 0, attribute_name);
 	if (ret < 0) return ret;
 
 	if (pos != 0)
