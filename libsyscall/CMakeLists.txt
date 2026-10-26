@@ -791,3 +791,11 @@ make_fat(libsyscall_dynamic)
 
 
 
+
+# Opt-in sources for the standalone Linux research builder. These use the
+# explicit modern SDK/private header scope, separate from the legacy SDK build.
+set(skywalk_client_sources
+	wrappers/skywalk/os_channel.c
+	wrappers/skywalk/cpu_copy_in_cksum.S
+	wrappers/skywalk/unsupported_channel.c
+)
