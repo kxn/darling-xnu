@@ -40,6 +40,7 @@ set(LIBSYSCALL_MIGS
 	mach/mach_host
 	mach/mach_port
 	mach/mach_voucher
+	mach/mach_eventlink
 	mach/memory_entry
 	mach/processor
 	mach/processor_set
