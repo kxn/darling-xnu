@@ -34,20 +34,38 @@ extern void _xtrace_postfork_child(void);
 
 void mach_driver_init(const char** applep)
 {
-#ifdef VARIANT_DYLD
-	if (applep != NULL)
+	// Both the bootstrap loader and an original simulator libSystem can be
+	// the first initializer. The mldr apple vector is the common ABI and
+	// does not depend on a Darling-extended libSystem callback table.
+	if (!_elfcalls && applep != NULL)
 	{
 		int i;
 		for (i = 0; applep[i] != NULL; i++)
 		{
-			if (strncmp(applep[i], "elf_calls=", 10) == 0)
-			{
-				uintptr_t table = (uintptr_t) __simple_atoi16(applep[i] + 10, NULL);
-				_elfcalls = (struct elf_calls*) table;
+			// Do not call libc/platform strings or ctype before the bridge
+			// and platform callbacks themselves have been initialized.
+			const char *text = applep[i];
+			static const char prefix[] = "elf_calls=";
+			unsigned int j = 0;
+			while (prefix[j] && text[j] == prefix[j]) ++j;
+			if (!prefix[j]) {
+				uintptr_t table = 0;
+				unsigned int digits = 0;
+				for (; text[j]; ++j) {
+					unsigned int c = (unsigned char)text[j], value;
+					if (c >= '0' && c <= '9') value = c - '0';
+					else if (c >= 'a' && c <= 'f') value = c - 'a' + 10;
+					else if (c >= 'A' && c <= 'F') value = c - 'A' + 10;
+					else break;
+					if (++digits > sizeof(uintptr_t) * 2) break;
+					table = (table << 4) | value;
+				}
+				if (!text[j] && digits && digits <= sizeof(uintptr_t) * 2 && table)
+					_elfcalls = (struct elf_calls*)table;
 			}
 		}
 	}
-#else
+#ifndef VARIANT_DYLD
 	// A simulator's Apple version-5 table has no Darling extension. Reuse
 	// the already initialized host bridge and never treat typed malloc as
 	// dyld_func_lookup at the old version-4 extension offset.
