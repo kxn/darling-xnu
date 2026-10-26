@@ -79,7 +79,10 @@ long sys_fcntl_nocancel(int fd, int cmd, long arg)
 
 	switch (cmd)
 	{
-		case 97: /* F_ADDFILESIGS_RETURN: same LP64 coverage result, Apple-signed Intel subset */
+		case 97: { /* F_ADDFILESIGS_RETURN: coverage without platform-identity requirement */
+			ret = dserver_rpc_register_dylib_signature(fd, (unsigned long long)arg);
+			return ret < 0 ? errno_linux_to_bsd(ret) : ret;
+		}
 		case 83: { /* F_ADDFILESIGS_FOR_DYLD_SIM, LP64 fsignatures_t */
 			/* The server receives the actual fd via SCM_RIGHTS and reads/writes
 			 * client memory safely. Never dereference the caller's pointer here. */
