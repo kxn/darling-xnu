@@ -1,6 +1,7 @@
 #include <darling/emulation/xnu_syscall/bsd/impl/bsdthread/workq_kernreturn.h>
 
 #include <sys/errno.h>
+#include <darling/emulation/common/tsd.h>
 #include <stddef.h>
 #include <sys/queue.h>
 #include <libsimple/lock.h>
@@ -96,7 +97,13 @@ struct timespec
 static int priority_to_class(int prio);
 
 // This is horrible, but it may work
-static struct wq_kevent_data* wq_event_pending = NULL;
+static struct wq_kevent_data* workq_event_pending(void) {
+	return _pthread_getspecific_direct(__PTK_DARLING_WORKQ_EVENT);
+}
+
+void workq_set_event_pending(struct wq_kevent_data* event) {
+	_pthread_setspecific_direct(__PTK_DARLING_WORKQ_EVENT, event);
+}
 
 static void rpc_guard(int fd) {
 	guard_entry_options_t options;
@@ -145,16 +152,18 @@ long sys_workq_kernreturn(int options, void* item, int affinity, int prio)
 			
 			// __simple_printf("kevent return, obj=%p, nkevents=%d\n", wq_event, nkevents);
 
-			if (wq_event_pending != NULL)
+			struct wq_kevent_data* pending = workq_event_pending();
+			if (pending != NULL)
 			{
-				int* sem;
-				if (nkevents > 0)
-					memmove(wq_event_pending->events, keventlist, nkevents * sizeof(struct kevent_qos_s));
-				wq_event_pending->nevents = nkevents;
-
-				sem = &wq_event_pending->sem;
-				wq_event_pending = NULL;
-				sem_up(sem);
+				int result = nkevents;
+				if (nkevents < 0 || nkevents > pending->capacity || (nkevents && !keventlist)) {
+					result = -EINVAL;
+				} else if (nkevents > 0) {
+					memmove(pending->events, keventlist, nkevents * sizeof(struct kevent_qos_s));
+				}
+				pending->nevents = result;
+				workq_set_event_pending(NULL);
+				sem_up(&pending->sem);
 			}
 			else
 				__simple_printf("wq_event is NULL, something is going to get stuck forever\n");
@@ -173,6 +182,7 @@ long sys_workq_kernreturn(int options, void* item, int affinity, int prio)
 
 			// Semaphore locked state (wait for wakeup)
 			me.sem = 0;
+			me.event = NULL;
 
 			// extract initial flags
 			// (in case we only get created and used once and then terminate; `_pthread_wqthread` requires a valid `flags` argument)
@@ -217,8 +227,7 @@ long sys_workq_kernreturn(int options, void* item, int affinity, int prio)
 wakeup: // we actually want to go back into the thread to do work
 			// __simple_printf("Thread %d woken up, prio=%d\n", thread_self, me.flags & WQ_FLAG_THREAD_PRIOMASK);
 
-			if (me.event)
-				wq_event_pending = me.event;
+			workq_set_event_pending(me.event);
 
 resume_thread: // we want the thread to resume, but it might be just to die
 			// reset stack and call entry point again with WQ_FLAG_THREAD_REUSE
@@ -289,10 +298,9 @@ resume_thread: // we want the thread to resume, but it might be just to die
 				libsimple_lock_unlock(&workq_parked_lock);
 
 				// __simple_printf("Spawning a new thread, nevents=%d\n", (wq_event != NULL) ? wq_event->nevents : -1);
-				wq_event_pending = wq_event;
 
 				__darling_thread_create(512*1024, pthread_obj_size, wqueue_entry_point_wrapper, 0,
-						(wq_event != NULL) ? wq_event->events : NULL, flags,
+						(void*)wq_event, flags,
 						(wq_event != NULL) ? wq_event->nevents : 0,
 						&callbacks, NULL);
 

@@ -11,6 +11,7 @@ struct wq_kevent_data
 {
 	struct kevent_qos_s* events;
 	int nevents;
+	int capacity;
 	int sem;
 };
 

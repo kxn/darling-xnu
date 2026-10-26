@@ -1,6 +1,7 @@
 #include <darling/emulation/xnu_syscall/bsd/impl/bsdthread/bsdthread_register.h>
 
 #include <sys/errno.h>
+#include <darling/emulation/xnu_syscall/bsd/impl/bsdthread/workq_kernreturn.h>
 #include <stdint.h>
 #include <pthread/tsd_private.h>
 
@@ -50,8 +51,16 @@ long sys_bsdthread_register(void* thread_start, void* wqthread, int pthsize,
 		__simple_abort();
 	}
 
-	return /* WORKQ_FEATURE_KEVENT | WORKQ_FEATURE_FINEPRIO | PTHREAD_FEATURE_QOS_MAINTENANCE 
-		| PTHREAD_FEATURE_DISPATCHFUNC | PTHREAD_FEATURE_QOS_DEFAULT */ 0;
+	/* This source variant is enabled only with the paired pthread event pump.
+	 * Workloops, kernel QoS overrides and SET_SELF are not advertised.
+	 */
+#ifdef DARLING_DIRECT_KEVENT_WORKQUEUE
+	return PTHREAD_FEATURE_DISPATCHFUNC | WORKQ_FEATURE_FINEPRIO |
+		PTHREAD_FEATURE_QOS_MAINTENANCE | WORKQ_FEATURE_KEVENT |
+		PTHREAD_FEATURE_QOS_DEFAULT;
+#else
+	return 0;
+#endif
 }
 
 // Before you make any changes to the assembly code, I strongly recommend looking at the `_thread_start`
@@ -124,7 +133,11 @@ void wqueue_entry_point_wrapper(void* self, int thread_port, void* stackaddr,
 		void* item, int reuse, int nevents)
 {
 	sigexc_thread_setup();
-	wqueue_entry_point_asm_jump(self, thread_port, stackaddr, item, reuse, nevents);
+	struct wq_kevent_data* event = (reuse & 0x00080000) ? item : NULL;
+	extern void workq_set_event_pending(struct wq_kevent_data*);
+	workq_set_event_pending(event);
+	wqueue_entry_point_asm_jump(self, thread_port, stackaddr,
+		event ? event->events : NULL, reuse, nevents);
 }
 
 // Before you make any changes to the assembly code, I strongly recommend looking at the `_start_wqthread`

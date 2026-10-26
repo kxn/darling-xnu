@@ -33,6 +33,15 @@ add_definitions(-DPRIVATE=1)
 
 add_subdirectory(libsyscall)
 
+# Original simulator libSystem does not include Darling's Linux event backend.
+# Embed the same source backend for the experimental direct-workqueue variant.
+set(direct_kqueue_objects "")
+set(direct_kqueue_siblings "")
+if(DARLING_DIRECT_KEVENT_WORKQUEUE)
+    set(direct_kqueue_objects $<TARGET_OBJECTS:kqueue>)
+    set(direct_kqueue_siblings system_pthread system_malloc system_platform)
+endif()
+
 set(DYLIB_INSTALL_NAME "/usr/lib/system/libsystem_kernel.dylib")
 add_circular(system_kernel FAT
 	OBJECTS
@@ -40,12 +49,13 @@ add_circular(system_kernel FAT
 		$<IF:$<BOOL:${BUILD_TARGET_64BIT}>,$<TARGET_OBJECTS:libsyscall_64>,>
 		$<TARGET_OBJECTS:libsyscall>
 		$<TARGET_OBJECTS:libsyscall_dynamic>
-		#$<TARGET_OBJECTS:kqueue>
+		${direct_kqueue_objects}
 		$<TARGET_OBJECTS:emulation>
 	SIBLINGS
 		system_c
 		compiler_rt
 		system_dyld
+		${direct_kqueue_siblings}
 	DEPENDENCIES
 		libsimple_darling
 )

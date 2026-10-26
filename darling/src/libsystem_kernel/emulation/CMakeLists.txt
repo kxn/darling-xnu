@@ -1,3 +1,10 @@
+# Requires the paired libpthread event-pump implementation. Default remains off
+# while extended event/workloop and receive-buffer APIs are being completed.
+option(DARLING_DIRECT_KEVENT_WORKQUEUE "Enable experimental direct kevent worker delivery" OFF)
+if(DARLING_DIRECT_KEVENT_WORKQUEUE)
+    add_definitions(-DDARLING_DIRECT_KEVENT_WORKQUEUE=1)
+endif()
+
 project(emulation)
 
 cmake_policy(SET CMP0005 NEW)
