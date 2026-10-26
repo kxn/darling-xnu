@@ -67,3 +67,5 @@ kern_return_t mk_timer_destroy_impl(mach_port_name_t name);
 mach_port_name_t mk_timer_create_impl(void);
 
 #endif // _MACH_TRAPS_H
+
+long host_create_mach_voucher_trap_impl(unsigned int host, const void* recipes, unsigned int count, unsigned int* voucher);

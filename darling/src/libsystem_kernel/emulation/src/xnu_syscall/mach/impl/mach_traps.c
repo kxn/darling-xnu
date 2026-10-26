@@ -828,3 +828,13 @@ mach_msg_return_t __darling_mach_msg2_rpc(void *data, uint64_t options,
     }
     return code;
 }
+
+/* The real voucher service is owned by the Mach host server. Match XNU's
+ * slow-path selection so the existing libsyscall wrapper performs its MIG call.
+ * No voucher, port name or successful result is fabricated by this trap.
+ */
+long host_create_mach_voucher_trap_impl(unsigned int host, const void* recipes,
+        unsigned int count, unsigned int* voucher)
+{
+    return MACH_SEND_INVALID_DEST;
+}
