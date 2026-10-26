@@ -77,6 +77,21 @@ typedef const struct _libkernel_functions {
 #endif
 } *_libkernel_functions_t;
 
+#ifdef DARLING
+/* The pinned Darling libSystem version-4 table appends private callbacks.
+ * Apple version 5 uses those same offsets for typed malloc callbacks instead.
+ * Keep the hosting callbacks separate from the current Apple public table. */
+struct _darling_libkernel_callbacks {
+    int (*dyld_func_lookup)(const char *, void **);
+    void (*posix_spawn_prepare)(void);
+    void (*posix_spawn_parent)(void);
+    void (*posix_spawn_child)(void);
+};
+extern struct _darling_libkernel_callbacks _darling_libkernel_callbacks
+    __attribute__((visibility("hidden")));
+#endif
+
+
 typedef const struct _libkernel_string_functions {
 	/* The following functions are included in version 1 of this structure */
 	unsigned long version;

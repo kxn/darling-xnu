@@ -74,6 +74,11 @@ void* (*_dlsym)(void*, const char*) __attribute__((visibility("hidden")));
 
 __attribute__((visibility("hidden")))
 _libkernel_functions_t _libkernel_functions;
+#ifdef DARLING
+__attribute__((visibility("hidden")))
+struct _darling_libkernel_callbacks _darling_libkernel_callbacks;
+#endif
+
 
 
 void
@@ -82,6 +87,14 @@ __libkernel_init(_libkernel_functions_t fns,
     const char *apple[] __attribute__((unused)),
     const struct ProgramVars *vars __attribute__((unused)))
 {
+#ifdef DARLING
+    if (!_darling_libkernel_callbacks.dyld_func_lookup && fns->version == 4) {
+        _darling_libkernel_callbacks.dyld_func_lookup = fns->dyld_func_lookup;
+        _darling_libkernel_callbacks.posix_spawn_prepare = fns->posix_spawn_prepare;
+        _darling_libkernel_callbacks.posix_spawn_parent = fns->posix_spawn_parent;
+        _darling_libkernel_callbacks.posix_spawn_child = fns->posix_spawn_child;
+    }
+#endif
 	_libkernel_functions = fns;
 	if (fns->dlsym) {
 		_dlsym = fns->dlsym;

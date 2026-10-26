@@ -48,11 +48,19 @@ void mach_driver_init(const char** applep)
 		}
 	}
 #else
-	// ask for elfcalls already set up by dyld
-	void* (*p2)(void);
-	_libkernel_functions->dyld_func_lookup("__dyld_get_elfcalls", (void**)&p2);
-
-	_elfcalls = p2();
+	// A simulator's Apple version-5 table has no Darling extension. Reuse
+	// the already initialized host bridge and never treat typed malloc as
+	// dyld_func_lookup at the old version-4 extension offset.
+	if (!_elfcalls) {
+		void* (*p2)(void) = NULL;
+		if (!_darling_libkernel_callbacks.dyld_func_lookup) {
+			__simple_printf("Darling host dyld callbacks are not initialized\n");
+			__simple_abort();
+		}
+		_darling_libkernel_callbacks.dyld_func_lookup("__dyld_get_elfcalls", (void**)&p2);
+		if (!p2) __simple_abort();
+		_elfcalls = p2();
+	}
 
 	if (applep) {
 		// this is not a fork; guard the main thread's RPC FD we get from mldr
