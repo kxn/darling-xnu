@@ -151,6 +151,22 @@ void voucher_mach_msg_revert(voucher_mach_msg_state_t state)
 }
 
 VISIBLE
+void voucher_mach_msg_clear(mach_msg_header_t *msg)
+{
+	/* Match libdispatch's message ownership rules. COPY_SEND keeps the
+	 * caller's reference; a received/pseudo-received MOVE_SEND must drop one.
+	 * Other dispositions and the remaining header fields are left intact. */
+	mach_msg_bits_t bits = MACH_MSGH_BITS_VOUCHER(msg->msgh_bits);
+	mach_port_t port = msg->msgh_voucher_port;
+	if (port && (bits == MACH_MSG_TYPE_COPY_SEND || bits == MACH_MSG_TYPE_MOVE_SEND)) {
+		if (bits == MACH_MSG_TYPE_MOVE_SEND)
+			mach_port_deallocate(mach_task_self(), port);
+		msg->msgh_voucher_port = MACH_PORT_NULL;
+		msg->msgh_bits &= ~MACH_MSGH_BITS_VOUCHER_MASK;
+	}
+}
+
+VISIBLE
 voucher_mach_msg_state_t voucher_mach_msg_adopt(mach_msg_header_t *msg)
 {
 	// UNIMPLEMENTED_TRAP();
