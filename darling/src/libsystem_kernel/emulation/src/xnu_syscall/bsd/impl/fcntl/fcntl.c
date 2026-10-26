@@ -2,6 +2,7 @@
 
 #include <sys/errno.h>
 #include <sys/fcntl.h>
+#include <darlingserver/rpc.h>
 
 #include <darling/emulation/xnu_syscall/bsd/impl/fcntl/open.h>
 #include <darling/emulation/common/base.h>
@@ -78,6 +79,12 @@ long sys_fcntl_nocancel(int fd, int cmd, long arg)
 
 	switch (cmd)
 	{
+		case 83: { /* F_ADDFILESIGS_FOR_DYLD_SIM, LP64 fsignatures_t */
+			/* The server receives the actual fd via SCM_RIGHTS and reads/writes
+			 * client memory safely. Never dereference the caller's pointer here. */
+			ret = dserver_rpc_register_simulator_dyld_signature(fd, (unsigned long long)arg);
+			return ret < 0 ? errno_linux_to_bsd(ret) : ret;
+		}
 
 		case F_NOCACHE: {
 			/* A real per-open-file one-pass cache hint. NOREUSE preserves
