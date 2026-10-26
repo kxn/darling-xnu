@@ -35,6 +35,7 @@
 #define WQOPS_THREAD_RETURN 4
 #define WQOPS_THREAD_SETCONC  8
 #define WQOPS_THREAD_KEVENT_RETURN 0x40
+#define WQOPS_THREAD_WORKLOOP_RETURN 0x100
 #define WQOPS_QUEUE_NEWSPISUPP  0x10
 #define WQOPS_QUEUE_REQTHREADS  0x20
 #define WQOPS_QUEUE_REQTHREADS2    0x30
@@ -101,6 +102,13 @@ static struct wq_kevent_data* workq_event_pending(void) {
 	return _pthread_getspecific_direct(__PTK_DARLING_WORKQ_EVENT);
 }
 
+static bool has_workloop_callback;
+bool workq_workloop_callback_registered(void) { return has_workloop_callback; }
+uint64_t workq_current_workloop_id(void) {
+	struct wq_kevent_data* event = workq_event_pending();
+	return event ? event->workloop_id : 0;
+}
+
 void workq_set_event_pending(struct wq_kevent_data* event) {
 	_pthread_setspecific_direct(__PTK_DARLING_WORKQ_EVENT, event);
 }
@@ -145,6 +153,11 @@ long sys_workq_kernreturn(int options, void* item, int affinity, int prio)
 	// item is only used with WQOPS_QUEUE_ADD
 	switch (options)
 	{
+		case WQOPS_REGISTER_WORKLOOP_CALLBACK:
+			if (affinity != 1) return -EINVAL;
+			has_workloop_callback = true;
+			return 0;
+		case WQOPS_THREAD_WORKLOOP_RETURN:
 		case WQOPS_THREAD_KEVENT_RETURN:
 		{
 			struct kevent_qos_s* keventlist = item;
@@ -247,6 +260,7 @@ resume_thread: // we want the thread to resume, but it might be just to die
 		case WQOPS_SET_EVENT_MANAGER_PRIORITY:
 		case WQOPS_QUEUE_NEWSPISUPP:
 			return 0;
+		case WQOPS_QUEUE_REQTHREAD_FOR_WORKLOOP:
 		case WQOPS_QUEUE_REQTHREAD_FOR_KEVENT:
 		{
 			wq_event = (struct wq_kevent_data*) item;
@@ -262,7 +276,7 @@ resume_thread: // we want the thread to resume, but it might be just to die
 				flags |= WQ_FLAG_THREAD_COOPERATIVE;
 
 			if (wq_event != NULL)
-				flags |= WQ_FLAG_THREAD_KEVENT;
+				flags |= wq_event->workloop_id ? WQ_FLAG_THREAD_WORKLOOP : WQ_FLAG_THREAD_KEVENT;
 			
 			// __simple_printf("Thread requested with prio %d\n", prio & WQ_FLAG_THREAD_PRIOMASK);
 

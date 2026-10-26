@@ -23,6 +23,7 @@ bsdwqthread_entry_t wqueue_entry_point;
 #define PTHREAD_FEATURE_QOS_DEFAULT 0x40000000
 #define WORKQ_FEATURE_FINEPRIO 0x02
 #define WORKQ_FEATURE_KEVENT 0x40
+#define WORKQ_FEATURE_WORKLOOP 0x80
 
 struct _pthread_registration_data {
 	uint64_t version;
@@ -52,11 +53,12 @@ long sys_bsdthread_register(void* thread_start, void* wqthread, int pthsize,
 	}
 
 	/* This source variant is enabled only with the paired pthread event pump.
-	 * Workloops, kernel QoS overrides and SET_SELF are not advertised.
+	 * The paired workloop transport is enabled; kernel QoS overrides and
+	 * SET_SELF are not advertised.
 	 */
 #ifdef DARLING_DIRECT_KEVENT_WORKQUEUE
 	return PTHREAD_FEATURE_DISPATCHFUNC | WORKQ_FEATURE_FINEPRIO |
-		PTHREAD_FEATURE_QOS_MAINTENANCE | WORKQ_FEATURE_KEVENT |
+		PTHREAD_FEATURE_QOS_MAINTENANCE | WORKQ_FEATURE_KEVENT | WORKQ_FEATURE_WORKLOOP |
 		PTHREAD_FEATURE_QOS_DEFAULT;
 #else
 	return 0;
@@ -133,7 +135,7 @@ void wqueue_entry_point_wrapper(void* self, int thread_port, void* stackaddr,
 		void* item, int reuse, int nevents)
 {
 	sigexc_thread_setup();
-	struct wq_kevent_data* event = (reuse & 0x00080000) ? item : NULL;
+	struct wq_kevent_data* event = (reuse & (0x00080000 | 0x00400000)) ? item : NULL;
 	extern void workq_set_event_pending(struct wq_kevent_data*);
 	workq_set_event_pending(event);
 	wqueue_entry_point_asm_jump(self, thread_port, stackaddr,

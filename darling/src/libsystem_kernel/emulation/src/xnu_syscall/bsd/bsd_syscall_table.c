@@ -30,6 +30,7 @@
 #include <darling/emulation/xnu_syscall/bsd/impl/kqueue/kevent.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/kqueue/kevent64.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/kqueue/kevent_qos.h>
+#include <darling/emulation/xnu_syscall/bsd/impl/kqueue/kevent_id.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/kqueue/kqueue.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/misc/abort_with_payload.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/misc/eventlink.h>
@@ -491,6 +492,7 @@ void* __bsd_syscall_table[600] = {
 	[496] = sys_eventlink_signal,
 	[497] = sys_eventlink_wait,
 	[498] = sys_eventlink_signal_wait,
+	[375] = sys_kevent_id,
 	[515] = sys_ulock_wait,
 	[516] = sys_ulock_wake,
 	[517] = sys_fclonefileat,
