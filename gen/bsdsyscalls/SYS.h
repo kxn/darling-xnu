@@ -132,6 +132,10 @@ LEAF(pseudo, 0)					;\
 #include <mach/i386/syscall_sw.h>
 
 #ifdef DARLING
+/* Emulation reserves errors below -2048 for ULF_NO_ERRNO: decode their
+ * negative errno directly instead of passing the marker to libc cerror.
+ * Ordinary Darwin errno values continue through the original error path.
+ */
 	#define UNIX_SYSCALL(name, nargs)						 \
 		.globl	cerror								;\
 	LEAF(_#name, 0)								;\
@@ -139,6 +143,11 @@ LEAF(pseudo, 0)					;\
 		call	__darling_bsd_syscall							;\
 		cmpq	$-4095, %rax	;\
 		jb		2f							;\
+		cmpq	$-2048, %rax	;\
+		jge		3f	;\
+		addq	$2048, %rax	;\
+		jmp		2f	;\
+	3:								;\
 		movq	%rax, %rdi							;\
 		negq	%rdi	;\
 		BRANCH_EXTERN(_cerror)							;\
@@ -150,6 +159,11 @@ LEAF(pseudo, 0)					;\
 		call __darling_bsd_syscall							;\
 		cmpq	$-4095, %rax	;\
 		jb		2f							;\
+		cmpq	$-2048, %rax	;\
+		jge		3f	;\
+		addq	$2048, %rax	;\
+		jmp		2f	;\
+	3:								;\
 		movq	%rax, %rdi							;\
 		negq	%rdi	;\
 		BRANCH_EXTERN(_##cerror)						;\
