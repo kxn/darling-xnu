@@ -57,6 +57,7 @@
 #define WQ_FLAG_THREAD_TSD_BASE_SET  0x00200000
 #define WQ_FLAG_THREAD_WORKLOOP      0x00400000
 #define WQ_FLAG_THREAD_OUTSIDEQOS    0x00800000
+#define WQ_FLAG_THREAD_COOPERATIVE   0x01000000
 
 #define WORKQ_EXIT_THREAD_NKEVENT (-1)
 
@@ -240,12 +241,14 @@ resume_thread: // we want the thread to resume, but it might be just to die
 			wq_event = (struct wq_kevent_data*) item;
 			affinity = 1;
 		}
-		case WQOPS_QUEUE_REQTHREADS2: // with prop bucket
+		case WQOPS_QUEUE_REQTHREADS2: // cooperative worker request
 		case WQOPS_QUEUE_REQTHREADS:
 		{
 			// affinity contains thread count
 
 			int i, flags = extract_wq_flags(prio);
+			if (options == WQOPS_QUEUE_REQTHREADS2)
+				flags |= WQ_FLAG_THREAD_COOPERATIVE;
 
 			if (wq_event != NULL)
 				flags |= WQ_FLAG_THREAD_KEVENT;
