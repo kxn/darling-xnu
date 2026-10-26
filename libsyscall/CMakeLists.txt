@@ -539,6 +539,7 @@ set(syscall_sources
 	bsdsyscalls/___openat.S
 	bsdsyscalls/_openbyid_np.S
 	bsdsyscalls/___open_dprotected_np.S
+	bsdsyscalls/___openat_dprotected_np.S
 	bsdsyscalls/___open_extended.S
 	bsdsyscalls/___open_nocancel.S
 	bsdsyscalls/___open.S

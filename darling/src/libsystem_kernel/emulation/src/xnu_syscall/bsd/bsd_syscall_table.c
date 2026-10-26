@@ -348,8 +348,9 @@ void* __bsd_syscall_table[600] = {
 	[203] = sys_mlock,
 	[204] = sys_munlock,
 	[216] = sys_open_dprotected_np,
+	[218] = sys_openat_dprotected_np,
 	[217] = sys_statv,
-	[218] = sys_lstatv,
+	// Legacy lstatv occupied 218; modern Darwin uses openat_dprotected_np.
 	[219] = sys_fstatv,
 	[220] = sys_getattrlist,
 	[221] = sys_setattrlist,

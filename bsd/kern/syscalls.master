@@ -318,7 +318,7 @@
 ; 216-> 219 used to be mkcomplex and {f,l}statv variants. They are gone now.
 216	AUE_NULL	ALL	{ int open_dprotected_np(user_addr_t path, int flags, int class, int dpflags, int mode) NO_SYSCALL_STUB; }
 217	AUE_FSGETPATH_EXTENDED	ALL	{ user_ssize_t fsgetpath_ext(user_addr_t buf, size_t bufsize, user_addr_t fsid, uint64_t objid, uint32_t options); }
-218	AUE_NULL	ALL	{ int nosys(void); }	{ old lstatv }
+218	AUE_NULL	ALL	{ int openat_dprotected_np(int fd, user_addr_t path, int flags, int class, int dpflags, int mode, int authfd) NO_SYSCALL_STUB; }
 219	AUE_NULL	ALL	{ int nosys(void); }	{ old fstatv }
 220	AUE_GETATTRLIST	ALL	{ int getattrlist(const char *path, struct attrlist *alist, void *attributeBuffer, size_t bufferSize, u_long options) NO_SYSCALL_STUB; }
 221	AUE_SETATTRLIST	ALL	{ int setattrlist(const char *path, struct attrlist *alist, void *attributeBuffer, size_t bufferSize, u_long options) NO_SYSCALL_STUB; }
