@@ -63,7 +63,10 @@ static void state_to_kernel(struct linux_ucontext* ctxt, void* tstate, void* fst
 
 #define DEBUG_SIGEXC
 #ifdef DEBUG_SIGEXC
-#define kern_printf(...) __simple_kprintf(__VA_ARGS__)
+// Signal diagnostics must not open another RPC on the interrupted thread's
+// socket. In particular, a diagnostic fault or a nested S2C signal can arrive
+// before the pending call has been made active. Use the direct Linux writer.
+#define kern_printf(...) __simple_fprintf(2, __VA_ARGS__)
 #else
 #define kern_printf(...)
 #endif
@@ -177,7 +180,7 @@ void sigrt_handler(int signum, struct linux_siginfo* info, struct linux_ucontext
 
 	state_from_kernel(ctxt, &tstate, &fstate);
 	} else if (signum == SIGNAL_S2C) {
-		__simple_kprintf("sigexc: sigrt_handler S2C");
+		kern_printf("sigexc: sigrt_handler S2C\n");
 
 		int ret = dserver_rpc_s2c_perform();
 		if (ret < 0) {
@@ -201,7 +204,7 @@ void darling_sigexc_self(void)
 {
 	am_i_ptraced = true;
 
-	__simple_kprintf("darling_sigexc_self()\n");
+	kern_printf("darling_sigexc_self()\n");
 	// Make sigexc_handler the handler for all signals in the process
 	for (int i = 1; i <= 31; i++)
 	{
@@ -342,7 +345,9 @@ void sigexc_handler(int linux_signum, struct linux_siginfo* info, struct linux_u
 			if (bsd_signum == SIGTSTP || bsd_signum == SIGSTOP)
 			{
 				kern_printf("sigexc: emulating SIGTSTP/SIGSTOP\n");
-				LINUX_SYSCALL(__NR_kill, 0, LINUX_SIGSTOP);
+				// The original kill already selected its target(s). Re-deliver
+				// the uncatchable stop only to this process, not its whole group.
+				LINUX_SYSCALL(__NR_kill, LINUX_SYSCALL(__NR_getpid), LINUX_SIGSTOP);
 			}
 			else
 			{
