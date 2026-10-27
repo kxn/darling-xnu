@@ -204,7 +204,6 @@ void darling_sigexc_self(void)
 {
 	am_i_ptraced = true;
 
-	kern_printf("darling_sigexc_self()\n");
 	// Make sigexc_handler the handler for all signals in the process
 	for (int i = 1; i <= 31; i++)
 	{
