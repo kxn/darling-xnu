@@ -11,6 +11,7 @@
 #include <darling/emulation/linux_premigration/linux-syscalls/linux.h>
 
 extern char* strcpy(char* dst, const char* src);
+extern void stat_birthtime_linux_to_bsd64(int, const char*, int, struct stat64*);
 
 long sys_fstatat(int fd, const char* path, struct stat* stat, int flag)
 {
@@ -82,6 +83,7 @@ long sys_fstatat64(int fd, const char* path, struct stat64* stat, int flag)
 		return errno_linux_to_bsd(ret);
 
 	stat_linux_to_bsd64(&lstat, stat);
+	stat_birthtime_linux_to_bsd64(vc.dfd, vc.path, linux_flags, stat);
 
 	return 0;
 }

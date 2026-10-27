@@ -4,6 +4,9 @@
 #include <darling/emulation/common/base.h>
 #include <darling/emulation/conversion/errno.h>
 #include <darling/emulation/linux_premigration/linux-syscalls/linux.h>
+#include <darling/emulation/conversion/common_at.h>
+
+extern void stat_birthtime_linux_to_bsd64(int, const char*, int, struct stat64*);
 
 long sys_fstat(int fd, struct stat* stat)
 {
@@ -39,6 +42,7 @@ long sys_fstat64(int fd, struct stat64* stat)
 		return errno_linux_to_bsd(ret);
 
 	stat_linux_to_bsd64(&lstat, stat);
+	stat_birthtime_linux_to_bsd64(fd, "", LINUX_AT_EMPTY_PATH, stat);
 
 	return 0;
 }
