@@ -124,6 +124,16 @@ long sys_posix_spawn(int* pid, const char* path, const struct _posix_spawn_args_
 
 		_darling_libkernel_callbacks.posix_spawn_child();
 
+#ifdef DARLING_DIRECT_KEVENT_WORKQUEUE
+		/* libSystem repairs its own libkqueue after fork. The direct event
+		 * workqueue variant also owns an independent queue backend in this
+		 * image (including the mutex used by dup2). Repair that copy after
+		 * libSystem has restored pthread/malloc, before any file action can
+		 * wait on a lock inherited from a vanished parent thread. */
+		extern void kqueue_atfork(void);
+		kqueue_atfork();
+#endif
+
 no_fork:
 		if (desc && desc->attrp)
 		{
