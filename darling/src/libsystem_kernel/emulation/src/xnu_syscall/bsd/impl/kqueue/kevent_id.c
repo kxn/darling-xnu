@@ -2,6 +2,7 @@
 #include <sys/errno.h>
 #ifdef DARLING_DIRECT_KEVENT_WORKQUEUE
 #include <pthread.h>
+#include <mach/mach.h>
 #define __PTHREAD_EXPOSE_INTERNALS__ 1
 #include <pthread/priority_private.h>
 #include <sys/fcntl.h>
@@ -20,7 +21,8 @@
 /* Experimental userspace transport. Domains are distinct and retained until
  * process exit, with an explicit bounded pool. Async thread requests follow
  * XNU's debounce/clear protocol. Process-private synchronous wait/wake uses
- * real futex waits. Ownership discovery/priority inheritance, sync IPC and
+ * real futex waits. Ownership discovery validates a real current-task Mach
+ * thread and gates event delivery. Priority inheritance, sync IPC and
  * workloop_ctl policies remain explicitly unsupported.
  */
 #define DOMAIN_LIMIT 64
@@ -29,11 +31,72 @@
 struct workloop_domain {
     uint64_t id;
     int fd, in_use, request_active, request_pending;
+    uint64_t owner_tid;
+    unsigned owner_epoch;
     struct kevent_qos_s request;
 };
 static struct workloop_domain domains[DOMAIN_LIMIT];
 static libsimple_lock_t domains_lock=LIBSIMPLE_LOCK_INITIALIZER;
 static long domains_process;
+
+/* Caller holds domains_lock. Use the actual Mach thread identity, then ask
+ * Linux to verify that it belongs to this process; a send right to a foreign
+ * task's thread must not become this workloop's owner. */
+static int domain_debounce(struct workloop_domain* domain, struct kevent_qos_s* event) {
+    uint64_t owner=domain->owner_tid;
+    int error=0;
+    if(event->ext[EV_EXTIDX_WL_ADDR]) {
+        if(event->ext[EV_EXTIDX_WL_ADDR]&7)return -EINVAL;
+        uint64_t value=0;
+        struct {void* base;unsigned long length;} local={&value,sizeof value},remote={(void*)event->ext[EV_EXTIDX_WL_ADDR],sizeof value};
+        if(LINUX_SYSCALL(__NR_process_vm_readv,LINUX_SYSCALL(__NR_getpid),&local,1,&remote,1,0)!=sizeof value)return -EFAULT;
+        uint64_t expected=event->ext[EV_EXTIDX_WL_VALUE],mask=event->ext[EV_EXTIDX_WL_MASK];
+        event->ext[EV_EXTIDX_WL_VALUE]=value;
+        if((value&mask)!=(expected&mask))error=-ESTALE;
+        else if(event->fflags&NOTE_WL_DISCOVER_OWNER) {
+            mach_port_t name=(uint32_t)value&~3u;
+            if(name) {
+                /* Paired XNU ipc_entry_name_mask restores the two borrowed
+                 * generation bits (GEN_MASK + GEN_ONE -> low bits 3). */
+                name|=3u;
+                thread_identifier_info_data_t info;
+                mach_msg_type_number_t count=THREAD_IDENTIFIER_INFO_COUNT;
+                if(thread_info(name,THREAD_IDENTIFIER_INFO,(thread_info_t)&info,&count)!=KERN_SUCCESS ||
+                        LINUX_SYSCALL(__NR_tgkill,LINUX_SYSCALL(__NR_getpid),info.thread_id,0)<0)return -EOWNERDEAD;
+                owner=info.thread_id;
+                if(owner==(uint64_t)LINUX_SYSCALL(__NR_gettid) && workq_current_workloop_id()==domain->id)owner=0;
+            }
+        }
+    }
+    if((event->fflags&NOTE_WL_END_OWNERSHIP) && owner==(uint64_t)LINUX_SYSCALL(__NR_gettid))owner=0;
+    if(owner!=domain->owner_tid) {
+        domain->owner_tid=owner;
+        __atomic_add_fetch(&domain->owner_epoch,1,__ATOMIC_RELEASE);
+        LINUX_SYSCALL(__NR_futex,&domain->owner_epoch,129,0x7fffffff,0,0,0);
+    }
+    return error;
+}
+
+static void domain_wait_owner(struct workloop_domain* domain) {
+    for(;;) {
+        libsimple_lock_lock(&domains_lock);
+        uint64_t owner=domain->owner_tid;
+        unsigned epoch=__atomic_load_n(&domain->owner_epoch,__ATOMIC_ACQUIRE);
+        libsimple_lock_unlock(&domains_lock);
+        if(!owner)return;
+        struct {long seconds,nanoseconds;} timeout={0,100000000};
+        LINUX_SYSCALL(__NR_futex,&domain->owner_epoch,128,epoch,&timeout,0,0);
+        if(LINUX_SYSCALL(__NR_tgkill,LINUX_SYSCALL(__NR_getpid),owner,0)==-3) {
+            libsimple_lock_lock(&domains_lock);
+            if(domain->owner_tid==owner) {
+                domain->owner_tid=0;
+                __atomic_add_fetch(&domain->owner_epoch,1,__ATOMIC_RELEASE);
+                LINUX_SYSCALL(__NR_futex,&domain->owner_epoch,129,0x7fffffff,0,0,0);
+            }
+            libsimple_lock_unlock(&domains_lock);
+        }
+    }
+}
 
 #define SYNC_WAITER_LIMIT 256
 struct sync_waiter {
@@ -54,7 +117,7 @@ static int domain_sync(struct workloop_domain* domain, struct kevent_qos_s* even
     if (event->fflags&NOTE_WL_UPDATE_QOS) return -EINVAL;
     if (command==NOTE_WL_SYNC_WAIT && (event->fflags&NOTE_WL_END_OWNERSHIP)) return -EINVAL;
     if ((event->flags&EV_DELETE) && (event->fflags&NOTE_WL_DISCOVER_OWNER)) return -EINVAL;
-    if (event->fflags&~(NOTE_WL_SYNC_WAIT|NOTE_WL_SYNC_WAKE|NOTE_WL_IGNORE_ESTALE)) return -ENOTSUP;
+    if (event->fflags&~(NOTE_WL_SYNC_WAIT|NOTE_WL_SYNC_WAKE|NOTE_WL_IGNORE_ESTALE|NOTE_WL_DISCOVER_OWNER|NOTE_WL_END_OWNERSHIP)) return -ENOTSUP;
     if (event->flags&~(EV_ADD|EV_DELETE|EV_DISABLE|EV_RECEIPT)) return -EINVAL;
     struct sync_waiter *row=NULL,*unused=NULL;
     for(unsigned i=0;i<SYNC_WAITER_LIMIT;i++) {
@@ -63,16 +126,9 @@ static int domain_sync(struct workloop_domain* domain, struct kevent_qos_s* even
     }
     if(!row && ((event->flags&EV_DELETE) || !(event->flags&EV_ADD))) return -ENOENT;
     if(!row && !(event->flags&EV_DISABLE)) return -EINVAL;
-    if(event->ext[EV_EXTIDX_WL_ADDR]) {
-        if(event->ext[EV_EXTIDX_WL_ADDR]&7) return -EINVAL;
-        uint64_t value=0;
-        struct {void* base;unsigned long length;} local={&value,sizeof value},remote={(void*)event->ext[EV_EXTIDX_WL_ADDR],sizeof value};
-        long size=LINUX_SYSCALL(__NR_process_vm_readv,LINUX_SYSCALL(__NR_getpid),&local,1,&remote,1,0);
-        if(size!=sizeof value) return -EFAULT;
-        uint64_t expected=event->ext[EV_EXTIDX_WL_VALUE],mask=event->ext[EV_EXTIDX_WL_MASK];
-        event->ext[EV_EXTIDX_WL_VALUE]=value;
-        if((value&mask)!=(expected&mask)) return event->fflags&NOTE_WL_IGNORE_ESTALE ? 0 : -ESTALE;
-    }
+    if(!row && (event->fflags&NOTE_WL_END_OWNERSHIP))return -EINVAL;
+    int error=domain_debounce(domain,event);
+    if(error)return error==-ESTALE && (event->fflags&NOTE_WL_IGNORE_ESTALE) ? 0 : error;
     if(!row) {
         if(!unused) return -ENOSPC;
         row=unused;*row=(struct sync_waiter){.domain=domain,.ident=event->ident,.in_use=1};
@@ -118,23 +174,15 @@ static int domain_request(struct workloop_domain* domain, struct kevent_qos_s* e
     if (command!=NOTE_WL_THREAD_REQUEST)
         return command==NOTE_WL_SYNC_WAIT || command==NOTE_WL_SYNC_WAKE || command==NOTE_WL_SYNC_IPC ? -ENOTSUP : -EINVAL;
     if (event->ident!=domain->id || event->xflags) return -EINVAL;
-    if (event->fflags & ~(NOTE_WL_THREAD_REQUEST|NOTE_WL_UPDATE_QOS|NOTE_WL_IGNORE_ESTALE)) return -ENOTSUP;
+    if (event->fflags & ~(NOTE_WL_THREAD_REQUEST|NOTE_WL_UPDATE_QOS|NOTE_WL_IGNORE_ESTALE|NOTE_WL_DISCOVER_OWNER|NOTE_WL_END_OWNERSHIP)) return -ENOTSUP;
     if (event->flags & ~(EV_ADD|EV_DELETE|EV_ENABLE|EV_DISABLE|EV_RECEIPT|EV_CLEAR)) return -ENOTSUP;
     if ((event->flags&EV_DELETE) && (event->fflags&NOTE_WL_UPDATE_QOS)) return -EINVAL;
+    if ((event->flags&EV_DELETE) && (event->fflags&NOTE_WL_DISCOVER_OWNER)) return -EINVAL;
     if (!domain->request_active && !(event->flags&EV_ADD)) return -ENOENT;
     if (!(event->flags&EV_DELETE) && (!domain->request_active || (event->fflags&NOTE_WL_UPDATE_QOS)) &&
             !_pthread_priority_thread_qos(event->qos)) return -ERANGE;
-    if (event->ext[EV_EXTIDX_WL_ADDR]) {
-        if(event->ext[EV_EXTIDX_WL_ADDR]&7)return -EINVAL;
-        uint64_t value=0;
-        struct { void* base; unsigned long length; } local={&value,sizeof value}, remote={(void*)event->ext[EV_EXTIDX_WL_ADDR],sizeof value};
-        long size=LINUX_SYSCALL(__NR_process_vm_readv,LINUX_SYSCALL(__NR_getpid),&local,1,&remote,1,0);
-        if (size!=sizeof value) return -EFAULT;
-        uint64_t expected=event->ext[EV_EXTIDX_WL_VALUE];
-        event->ext[EV_EXTIDX_WL_VALUE]=value;
-        uint64_t mask=event->ext[EV_EXTIDX_WL_MASK];
-        if ((value&mask)!=(expected&mask)) return event->fflags&NOTE_WL_IGNORE_ESTALE ? 0 : -ESTALE;
-    }
+    int debounce=domain_debounce(domain,event);
+    if(debounce)return debounce==-ESTALE && (event->fflags&NOTE_WL_IGNORE_ESTALE) ? 0 : debounce;
     if (event->flags&EV_DELETE) {
         domain->request_active=domain->request_pending=0;
         return 0;
@@ -189,11 +237,15 @@ static void* domain_pump(void* opaque) {
         }
         if(!count) {
             count=sys_kevent_qos(domain->fd,NULL,0,batch.events,EVENT_LIMIT,receive_data,&available,0);
-            if(count>0)count=domain_collect(domain,batch.events,count);
+            if(count>0) {
+                domain_wait_owner(domain);
+                count=domain_collect(domain,batch.events,count);
+            }
         }
         if (count == -EINTR) continue;
         if (count < 0) { __simple_printf("Darling workloop event pump error %d\n",count); __simple_abort(); }
         if (!count) continue;
+        domain_wait_owner(domain);
         struct wq_kevent_data delivery={.events=batch.events,.nevents=count,.capacity=EVENT_LIMIT,
             .sem=0,.workloop_id=domain->id};
         int error=sys_workq_kernreturn(WQOPS_QUEUE_REQTHREAD_FOR_WORKLOOP,&delivery,1,batch.events[0].qos);
