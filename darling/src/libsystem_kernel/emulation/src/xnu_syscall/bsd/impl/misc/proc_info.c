@@ -9,6 +9,7 @@
 #include <stdbool.h>
 #include <sys/proc.h>
 #include <stddef.h>
+#include <limits.h>
 
 #include <darling/emulation/common/base.h>
 #include <darling/emulation/conversion/dirent/getdirentries.h>
@@ -36,6 +37,7 @@
 #define LINUX_PR_SET_NAME 15
 
 static long _proc_pidinfo(int32_t pid, uint32_t flavor, uint64_t arg, void* buffer, int32_t bufsize);
+static long _proc_listpids(uint32_t type, uint32_t typeinfo, void* buffer, int32_t bufsize);
 
 extern __SIZE_TYPE__ strlen(const char *s);
 extern void *memset(void *s, int c, __SIZE_TYPE__ n);
@@ -83,13 +85,89 @@ long sys_proc_info(uint32_t callnum, int32_t pid, uint32_t flavor,
 			return 0;
 		case 2: // proc_pidinfo
 			return _proc_pidinfo(pid, flavor, arg, buffer, bufsize);
+		case 1: // proc_listpids: pid and flavor carry type and typeinfo
+			return _proc_listpids((uint32_t)pid, flavor, buffer, bufsize);
 		case 3: // proc_pidfdinfo
-		case 1: // proc_listpids
 		default:
 			__simple_printf("sys_proc_info(): Unsupported callnum: %d\n",
 					callnum);
 			return -ENOTSUP;
 	}
+}
+
+static bool _proc_listpids_matches(uint32_t type, uint32_t typeinfo, int32_t pid)
+{
+	char path[128], data[4096];
+	if (type == PROC_UID_ONLY || type == PROC_RUID_ONLY) {
+		__simple_sprintf(path, DARLING_PROCFS_PATH "/%d/status", pid);
+		if (!read_string(path, data, sizeof(data))) return false;
+		for (char* line = data; *line; ++line) {
+			if ((line == data || line[-1] == '\n') && !strncmp(line, "Uid:", 4)) {
+				line += 4;
+				while (*line == ' ' || *line == '\t') ++line;
+				uint32_t real = (uint32_t)__simple_atoi(line, NULL);
+				while (*line >= '0' && *line <= '9') ++line;
+				while (*line == ' ' || *line == '\t') ++line;
+				uint32_t effective = (uint32_t)__simple_atoi(line, NULL);
+				return (type == PROC_UID_ONLY ? effective : real) == typeinfo;
+			}
+		}
+		return false;
+	}
+	__simple_sprintf(path, DARLING_PROCFS_PATH "/%d/stat", pid);
+	if (!read_string(path, data, sizeof(data))) return false;
+	char* cursor = data;
+	skip_stat_elems(&cursor, 3);
+	const char* parent = next_stat_elem(&cursor);
+	if (!parent) return false;
+	uint32_t ppid = (uint32_t)__simple_atoi(parent, NULL);
+	const char* group = next_stat_elem(&cursor);
+	if (!group) return false;
+	uint32_t pgrp = (uint32_t)__simple_atoi(group, NULL);
+	if (type == PROC_PPID_ONLY) return ppid == typeinfo;
+	if (type == PROC_PGRP_ONLY) return pgrp == typeinfo;
+	return false;
+}
+
+static long _proc_listpids(uint32_t type, uint32_t typeinfo, void* buffer, int32_t bufsize)
+{
+	if (type < PROC_ALL_PIDS || type > PROC_KDBG_ONLY || bufsize < 0) return -EINVAL;
+	// Controlling-TTY and XNU kdebug state need separate models; do not
+	// pretend that an unsupported query is a successful empty process list.
+	if (type == PROC_TTY_ONLY || type == PROC_KDBG_ONLY) return -ENOTSUP;
+	if (buffer && bufsize < sizeof(int32_t)) return -ENOMEM;
+	long fd = sys_open_nocancel(DARLING_PROCFS_PATH, BSD_O_RDONLY | BSD_O_DIRECTORY, 0);
+	if (fd < 0) return fd;
+	char entries[2048]; long base = 0, result; unsigned count = 0;
+	while ((result = sys_getdirentries(fd, entries, sizeof(entries), &base)) > 0) {
+		for (unsigned offset = 0; offset < result;) {
+			struct bsd_dirent* entry = (struct bsd_dirent*)(entries + offset);
+			if (!entry->d_reclen || entry->d_reclen > result - offset) { result = -EIO; goto done; }
+			offset += entry->d_reclen;
+			const char* name = entry->d_name; unsigned long long id = 0;
+			if (!*name) continue;
+			bool numeric = true;
+			for (const char* digit = name; *digit; ++digit) {
+				if (*digit < '0' || *digit > '9' || id > (INT_MAX - (*digit - '0')) / 10ULL) { numeric = false; break; }
+				id = id * 10 + (*digit - '0');
+			}
+			if (!numeric || id == 0) continue;
+			// XNU's NULL-buffer size probe includes room for 20 new processes
+			// and counts all processes, even for a subsequent filtered query.
+			if (!buffer || type == PROC_ALL_PIDS || _proc_listpids_matches(type, typeinfo, (int32_t)id)) {
+				if (count >= INT_MAX / sizeof(int32_t) - 20) { result = -EOVERFLOW; goto done; }
+				if (buffer) {
+					int32_t pid = (int32_t)id;
+					memcpy((char*)buffer + count * sizeof(pid), &pid, sizeof(pid));
+				}
+				++count;
+				if (buffer && count == (unsigned)bufsize / sizeof(int32_t)) { result = 0; goto done; }
+			}
+		}
+	}
+done:
+	close_internal(fd);
+	return result < 0 ? result : (long)(count + (buffer ? 0 : 20)) * sizeof(int32_t);
 }
 
 static bool parse_smaps_firstline(
