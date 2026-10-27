@@ -71,6 +71,11 @@ struct xnu_attrlist* alist, void *attributeBuffer, __SIZE_TYPE__ bufferSize, uns
 	if (alist->bitmapcount < ATTR_BIT_MAP_COUNT)
 		return -EINVAL;
 
+	/* Linux cannot set inode birth/change times through utimensat. Report
+	 * the known unsupported operation so callers can use their fallback. */
+	if (alist->commonattr & (ATTR_CMN_CRTIME | ATTR_CMN_CHGTIME))
+		return -ENOTSUP;
+
 	if ((alist->commonattr & COMMON_SUPPORTED) != alist->commonattr)
 		return -EINVAL;
 	if ((alist->volattr & VOLUME_SUPPORTED) != alist->volattr)
