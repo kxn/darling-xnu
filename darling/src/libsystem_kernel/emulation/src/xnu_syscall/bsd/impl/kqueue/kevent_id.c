@@ -8,6 +8,7 @@
 #include <libsimple/lock.h>
 #include <darling/emulation/common/base.h>
 #include <darling/emulation/common/simple.h>
+#include <darling/emulation/conversion/errno.h>
 #include <darling/emulation/linux_premigration/linux-syscalls/linux.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/kqueue/kqueue.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/kqueue/kevent_qos.h>
@@ -18,8 +19,9 @@
 
 /* Experimental userspace transport. Domains are distinct and retained until
  * process exit, with an explicit bounded pool. Async thread requests follow
- * XNU's debounce/clear protocol. Ownership, sync waiters and workloop_ctl
- * policies are explicitly unsupported.
+ * XNU's debounce/clear protocol. Process-private synchronous wait/wake uses
+ * real futex waits. Ownership discovery/priority inheritance, sync IPC and
+ * workloop_ctl policies remain explicitly unsupported.
  */
 #define DOMAIN_LIMIT 64
 #define EVENT_LIMIT 16
@@ -32,6 +34,81 @@ struct workloop_domain {
 static struct workloop_domain domains[DOMAIN_LIMIT];
 static libsimple_lock_t domains_lock=LIBSIMPLE_LOCK_INITIALIZER;
 static long domains_process;
+
+#define SYNC_WAITER_LIMIT 256
+struct sync_waiter {
+    struct workloop_domain* domain;
+    uint64_t ident;
+    unsigned in_use, deleted, waiting, woken;
+    unsigned futex;
+};
+static struct sync_waiter sync_waiters[SYNC_WAITER_LIMIT];
+
+/* The domain lock protects registration/deletion; a pinned waiter row cannot
+ * be reused until its blocked caller returns. Wake-before-wait remains latched
+ * on the knote until explicit deletion, as in filt_wlattach/filt_wltouch. */
+static int domain_sync(struct workloop_domain* domain, struct kevent_qos_s* event,
+        struct sync_waiter** blocked) {
+    unsigned command=event->fflags&NOTE_WL_COMMANDS_MASK;
+    if (event->ident==domain->id || event->xflags) return -EINVAL;
+    if (event->fflags&NOTE_WL_UPDATE_QOS) return -EINVAL;
+    if (command==NOTE_WL_SYNC_WAIT && (event->fflags&NOTE_WL_END_OWNERSHIP)) return -EINVAL;
+    if ((event->flags&EV_DELETE) && (event->fflags&NOTE_WL_DISCOVER_OWNER)) return -EINVAL;
+    if (event->fflags&~(NOTE_WL_SYNC_WAIT|NOTE_WL_SYNC_WAKE|NOTE_WL_IGNORE_ESTALE)) return -ENOTSUP;
+    if (event->flags&~(EV_ADD|EV_DELETE|EV_DISABLE|EV_RECEIPT)) return -EINVAL;
+    struct sync_waiter *row=NULL,*unused=NULL;
+    for(unsigned i=0;i<SYNC_WAITER_LIMIT;i++) {
+        if(!sync_waiters[i].in_use) {if(!unused)unused=&sync_waiters[i];}
+        else if(!sync_waiters[i].deleted && sync_waiters[i].domain==domain && sync_waiters[i].ident==event->ident) row=&sync_waiters[i];
+    }
+    if(!row && ((event->flags&EV_DELETE) || !(event->flags&EV_ADD))) return -ENOENT;
+    if(!row && !(event->flags&EV_DISABLE)) return -EINVAL;
+    if(event->ext[EV_EXTIDX_WL_ADDR]) {
+        if(event->ext[EV_EXTIDX_WL_ADDR]&7) return -EINVAL;
+        uint64_t value=0;
+        struct {void* base;unsigned long length;} local={&value,sizeof value},remote={(void*)event->ext[EV_EXTIDX_WL_ADDR],sizeof value};
+        long size=LINUX_SYSCALL(__NR_process_vm_readv,LINUX_SYSCALL(__NR_getpid),&local,1,&remote,1,0);
+        if(size!=sizeof value) return -EFAULT;
+        uint64_t expected=event->ext[EV_EXTIDX_WL_VALUE],mask=event->ext[EV_EXTIDX_WL_MASK];
+        event->ext[EV_EXTIDX_WL_VALUE]=value;
+        if((value&mask)!=(expected&mask)) return event->fflags&NOTE_WL_IGNORE_ESTALE ? 0 : -ESTALE;
+    }
+    if(!row) {
+        if(!unused) return -ENOSPC;
+        row=unused;*row=(struct sync_waiter){.domain=domain,.ident=event->ident,.in_use=1};
+    }
+    if(event->flags&EV_DELETE) {
+        row->deleted=1;
+        __atomic_store_n(&row->futex,1,__ATOMIC_RELEASE);
+        LINUX_SYSCALL(__NR_futex,&row->futex,129,1,0,0,0); /* FUTEX_WAKE_PRIVATE */
+        if(!row->waiting)*row=(struct sync_waiter){0};
+        return 0;
+    }
+    if(command==NOTE_WL_SYNC_WAKE) {
+        if(row->woken) return -EALREADY;
+        row->woken=1;
+        __atomic_store_n(&row->futex,1,__ATOMIC_RELEASE);
+        LINUX_SYSCALL(__NR_futex,&row->futex,129,1,0,0,0);
+        return 0;
+    }
+    if(row->woken) return 0;
+    if(row->waiting) return -EBUSY;
+    row->waiting=1;*blocked=row;
+    return 0;
+}
+
+static int domain_sync_wait(struct sync_waiter* row) {
+    int result=0;
+    while(!__atomic_load_n(&row->futex,__ATOMIC_ACQUIRE)) {
+        long error=LINUX_SYSCALL(__NR_futex,&row->futex,128,0,0,0,0); /* FUTEX_WAIT_PRIVATE */
+        if(error<0 && error!=-11) {result=errno_linux_to_bsd(error);break;}
+    }
+    libsimple_lock_lock(&domains_lock);
+    row->waiting=0;
+    if(row->deleted)*row=(struct sync_waiter){0};
+    libsimple_lock_unlock(&domains_lock);
+    return result;
+}
 
 /* Caller holds domains_lock. An actual eventfd wakes the same domain pump
  * that handles I/O, so async requests cannot run a second concurrent servicer.
@@ -186,9 +263,13 @@ long sys_kevent_id(uint64_t id, const struct kevent_qos_s* changes, int nchanges
         struct kevent_qos_s event=input[i];
         int error=0;
         if(event.filter==EVFILT_WORKLOOP) {
+            struct sync_waiter* blocked=NULL;
             libsimple_lock_lock(&domains_lock);
-            error=domain_request(domain,&event);
+            unsigned command=event.fflags&NOTE_WL_COMMANDS_MASK;
+            error=(command==NOTE_WL_SYNC_WAIT || command==NOTE_WL_SYNC_WAKE) ?
+                domain_sync(domain,&event,&blocked) : domain_request(domain,&event);
             libsimple_lock_unlock(&domains_lock);
+            if(blocked)error=domain_sync_wait(blocked);
             if(error || (event.flags&EV_RECEIPT)) {
                 if(count<nevents) {event.flags|=EV_ERROR;event.data=-error;events[count++]=event;}
                 else if(error)return error;
