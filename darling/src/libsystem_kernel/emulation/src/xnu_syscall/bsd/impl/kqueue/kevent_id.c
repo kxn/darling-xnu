@@ -118,7 +118,10 @@ static int domain_sync(struct workloop_domain* domain, struct kevent_qos_s* even
     if (command==NOTE_WL_SYNC_WAIT && (event->fflags&NOTE_WL_END_OWNERSHIP)) return -EINVAL;
     if ((event->flags&EV_DELETE) && (event->fflags&NOTE_WL_DISCOVER_OWNER)) return -EINVAL;
     if (event->fflags&~(NOTE_WL_SYNC_WAIT|NOTE_WL_SYNC_WAKE|NOTE_WL_IGNORE_ESTALE|NOTE_WL_DISCOVER_OWNER|NOTE_WL_END_OWNERSHIP)) return -ENOTSUP;
-    if (event->flags&~(EV_ADD|EV_DELETE|EV_DISABLE|EV_RECEIPT)) return -EINVAL;
+    if (event->flags&~(EV_ADD|EV_DELETE|EV_DISABLE|EV_ENABLE|EV_RECEIPT)) return -EINVAL;
+    /* A disabled sync knote cannot be enabled, but EV_DELETE wins over
+     * EV_ENABLE in the original filter's cancellation/handoff operation. */
+    if ((event->flags&(EV_ENABLE|EV_DELETE))==EV_ENABLE) return -EINVAL;
     struct sync_waiter *row=NULL,*unused=NULL;
     for(unsigned i=0;i<SYNC_WAITER_LIMIT;i++) {
         if(!sync_waiters[i].in_use) {if(!unused)unused=&sync_waiters[i];}
