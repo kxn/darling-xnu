@@ -88,6 +88,10 @@ static int spawn_disclaim(const struct _posix_spawn_args_desc* desc, bool* discl
 long sys_posix_spawn(int* pid, const char* path, const struct _posix_spawn_args_desc* desc,
 		char** argvp, char** envp)
 {
+	/* Keep NULL distinct from inheritance, including the binprefs path that
+	 * needs to extend this vector before entering execve_internal. */
+	char* empty_envp[] = { NULL };
+	if (!envp) envp = empty_envp;
 	int ret, my_pid;
 	int pipe[2] = { -1, -1 };
 	bool disclaim = false;

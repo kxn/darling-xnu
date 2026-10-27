@@ -68,6 +68,10 @@ static bool exec_environment_matches(const char* fname, const char* paths)
 
 static long execve_internal(const char* fname, const char** argvp, const char** envp, bool disclaim)
 {
+	/* XNU exec_extract_strings accepts a NULL environment vector as empty.
+	 * Normalize before inspecting scopes or adding the loader's own entries. */
+	const char* empty_envp[] = { NULL };
+	if (!envp) envp = empty_envp;
 	int ret;
 	struct vchroot_expand_args vc;
 	char mldr_path[4096];
