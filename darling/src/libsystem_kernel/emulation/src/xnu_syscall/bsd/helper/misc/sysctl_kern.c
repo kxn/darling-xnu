@@ -2,6 +2,7 @@
 #include <darling/emulation/xnu_syscall/bsd/helper/misc/sysctl_kern.h>
 
 #include <sys/errno.h>
+#include <limits.h>
 
 #include <darling/emulation/xnu_syscall/bsd/helper/misc/sysctl_proc.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/misc/getrlimit.h>
@@ -25,6 +26,7 @@
 enum {
 	_KERN_MSGBUF = 1000,
 	_KERN_OSPRODUCTVERSION,
+	_KERN_MEMORYSTATUS_LEVEL,
 
 	_KERN_SEMMNS = 1000,
 };
@@ -48,6 +50,7 @@ static sysctl_handler(handle_usrstack64);
 static sysctl_handler(handle_sysv_semmns);
 static sysctl_handler(handle_osproductversion);
 static sysctl_handler(handle_osrevision);
+static sysctl_handler(handle_memorystatus_level);
 
 extern int _sysctl_proc(int what, int flag, struct kinfo_proc* out, unsigned long* buflen);
 extern int _sysctl_procargs(int pid, char* buf, unsigned long* buflen);
@@ -80,6 +83,7 @@ const struct known_sysctl sysctls_kern[] = {
 	{ .oid = _KERN_OSPRODUCTVERSION, .type = CTLTYPE_STRING, .exttype = "S", .name = "osproductversion", .handler = handle_osproductversion },
 	{ .oid = KERN_OSREV, .type = CTLTYPE_INT, .exttype = "I", .name = "osrevision", .handler = handle_osrevision },
 	{ .oid = KERN_SYSV, .type = CTLTYPE_NODE, .exttype = "", .name = "sysv", .subctls = sysctls_kern_sysv },
+	{ .oid = _KERN_MEMORYSTATUS_LEVEL, .type = CTLTYPE_INT, .exttype = "IU", .name = "memorystatus_level", .handler = handle_memorystatus_level },
 	{ .oid = -1 }
 };
 
@@ -357,4 +361,59 @@ static sysctl_handler(handle_osrevision) {
 		*ovalue = EMULATED_OSREVISION;
 	*oldlen = sizeof(*ovalue);
 	return 0;
+}
+
+/* Darwin exposes available pages as a percentage of physical pages here.
+ * Linux MemAvailable includes reclaimable memory; use it as the host's
+ * availability estimate rather than claiming to implement Darwin jetsam. */
+static int meminfo_kib(const char* text, unsigned long long* result)
+{
+    while (*text == ' ' || *text == '\t') ++text;
+    if (*text < '0' || *text > '9') return -EIO;
+    unsigned long long value = 0;
+    do {
+        unsigned digit = *text++ - '0';
+        if (value > (ULLONG_MAX - digit) / 10) return -EIO;
+        value = value * 10 + digit;
+    } while (*text >= '0' && *text <= '9');
+    while (*text == ' ' || *text == '\t') ++text;
+    if (text[0] != 'k' || text[1] != 'B' || text[2] != '\0') return -EIO;
+    *result = value;
+    return 0;
+}
+
+sysctl_handler(handle_memorystatus_level)
+{
+    if (_new || newlen) return -EPERM;
+    if (!oldlen) return -EFAULT;
+    unsigned long capacity = *oldlen;
+    *oldlen = sizeof(unsigned);
+    if (!old) return 0;
+    if (capacity < sizeof(unsigned)) {
+        /* sysctl_old_user rejects a short integer before advancing oldidx. */
+        *oldlen = 0;
+        return -ENOMEM;
+    }
+    int fd = sys_open(DARLING_PROCFS_PATH "/meminfo", BSD_O_RDONLY, 0);
+    if (fd < 0) return fd;
+    struct rdline_buffer buffer;
+    _readline_init(&buffer);
+    const char* line;
+    unsigned long long total = 0, available = 0;
+    unsigned seen = 0;
+    int status = 0;
+    while ((line = _readline(fd, &buffer)) != NULL) {
+        if (!strncmp(line, "MemTotal:", 9)) {
+            status = meminfo_kib(line + 9, &total); seen |= 1;
+        } else if (!strncmp(line, "MemAvailable:", 13)) {
+            status = meminfo_kib(line + 13, &available); seen |= 2;
+        }
+        if (status || seen == 3) break;
+    }
+    close_internal(fd);
+    if (status) return status;
+    if (seen != 3 || !total || total > ULLONG_MAX / 100) return -EIO;
+    if (available > total) available = total;
+    *(unsigned*)old = (unsigned)(available * 100 / total);
+    return 0;
 }
