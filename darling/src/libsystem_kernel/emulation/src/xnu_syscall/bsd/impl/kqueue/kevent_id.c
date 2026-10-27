@@ -144,7 +144,9 @@ static int domain_sync(struct workloop_domain* domain, struct kevent_qos_s* even
         return 0;
     }
     if(command==NOTE_WL_SYNC_WAKE) {
-        if(row->woken) return -EALREADY;
+        /* filt_wltouch accepts repeated wake/owner-discovery updates. The
+         * original dispatch ensure-ownership path relies on that behavior,
+         * despite the older event.h comment mentioning EALREADY. */
         row->woken=1;
         __atomic_store_n(&row->futex,1,__ATOMIC_RELEASE);
         LINUX_SYSCALL(__NR_futex,&row->futex,129,1,0,0,0);
