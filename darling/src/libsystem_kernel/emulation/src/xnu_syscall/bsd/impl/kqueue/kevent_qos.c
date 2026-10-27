@@ -20,6 +20,15 @@ static libsimple_lock_t default_lock = LIBSIMPLE_LOCK_INITIALIZER;
 #define MAX_QOS_EVENTS 1024
 struct qos_registration { int active; int kq; struct kevent_qos_s event; };
 static struct qos_registration qos_registrations[MAX_QOS_EVENTS];
+void kevent_qos_closed_fd(int fd) {
+    libsimple_lock_lock(&default_lock);
+    for(unsigned i=0;i<MAX_QOS_EVENTS;i++) {
+        struct qos_registration* row=&qos_registrations[i];
+        if(row->active && (row->kq==fd || (row->event.ident==(uint64_t)fd &&
+                (row->event.filter==EVFILT_READ || row->event.filter==EVFILT_WRITE || row->event.filter==EVFILT_VNODE))))row->active=0;
+    }
+    libsimple_lock_unlock(&default_lock);
+}
 extern void* memmove(void*, const void*, __SIZE_TYPE__);
 /* Paired libkqueue's default Mach receive scratch buffer is 64 bytes.
  * Limit auxiliary-buffer batches conservatively before consuming messages;
@@ -145,7 +154,7 @@ long sys_kevent_qos(int kq, const struct kevent_qos_s* changelist, int nchanges,
             if (row->active && row->kq == kq && row->event.ident == q.ident && row->event.filter == q.filter && row->event.udata == q.udata) {
                 q.qos=row->event.qos;
                 uses_default_buffer=!row->event.ext[1];
-                if ((row->event.flags & EV_ONESHOT) && !(q.flags & EV_ERROR)) row->active=0;
+                if (((row->event.flags & EV_ONESHOT) || (q.flags & EV_DELETE)) && !(q.flags & EV_ERROR)) row->active=0;
                 break;
             }
         }

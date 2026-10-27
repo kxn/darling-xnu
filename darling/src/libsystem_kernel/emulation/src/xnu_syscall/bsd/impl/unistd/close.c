@@ -15,6 +15,7 @@ int kqueue_close(int kq) { return 0; }
 __attribute__((weak))
 __attribute__((visibility("default")))
 void kqueue_closed_fd(int fd) {}
+extern void kevent_qos_closed_fd(int fd);
 
 long sys_close(int fd)
 {
@@ -34,6 +35,7 @@ long sys_close_nocancel(int fd)
 	}
 
 	if (kqueue_close(fd)) {
+        kevent_qos_closed_fd(fd);
 		// this FD belongs to libkqueue and it will take care of closing it
 		return 0;
 	}
@@ -41,8 +43,10 @@ long sys_close_nocancel(int fd)
 	ret = LINUX_SYSCALL1(__NR_close, fd);
 	if (ret < 0)
 		ret = errno_linux_to_bsd(ret);
-	else
+	else {
 		kqueue_closed_fd(fd);
+        kevent_qos_closed_fd(fd);
+    }
 
 	return ret;
 }
