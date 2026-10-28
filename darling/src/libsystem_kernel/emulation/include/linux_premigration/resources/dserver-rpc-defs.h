@@ -1,4 +1,5 @@
 #include <stddef.h>
+#include <sys/poll.h>
 #include <sys/_types/_iovec_t.h>
 
 #include <darling/emulation/xnu_syscall/bsd/impl/network/recvmsg.h>
@@ -8,6 +9,7 @@
 #include <darling/emulation/common/base.h>
 #include <darling/emulation/conversion/duct_errno.h>
 #include <darling/emulation/conversion/network/getsockopt.h>
+#include <darling/emulation/conversion/network/duct.h>
 #include <darling/emulation/other/mach/lkm.h>
 #include <darling/emulation/linux_premigration/elfcalls_wrapper.h>
 #include <darling/emulation/common/simple.h>
@@ -85,10 +87,31 @@ static long int dserver_rpc_hooks_send_message(int socket, const dserver_rpc_hoo
 
 static long int dserver_rpc_hooks_receive_message(int socket, dserver_rpc_hooks_msghdr_t* out_message) {
 	long int ret = 0;
+	long int mask_status;
+	linux_sigset_t saved_mask;
+	/* A consumed S2C request must finish before a signal handler can enter
+	 * another RPC. Keep ordinary signals and Darling's two RPC signal
+	 * handlers blocked during dequeue, execution and reply; ppoll restores
+	 * the caller's mask atomically while waiting, so blocking RPCs remain
+	 * interruptible. Do not include libc's reserved real-time signals. */
+	linux_sigset_t transaction_mask = 0x7fffffffULL | (3ULL << (LINUX_SIGRTMIN - 1));
+	struct pollfd socket_poll = { .fd = socket, .events = POLLIN };
+	if (socket < 0) {
+		return -LINUX_EBADF;
+	}
+	mask_status = LINUX_SYSCALL(__NR_rt_sigprocmask, 0 /* Linux SIG_BLOCK */,
+		&transaction_mask, &saved_mask, sizeof(saved_mask));
+	if (mask_status < 0) {
+		return mask_status;
+	}
 	const __typeof__(out_message->msg_controllen) control_capacity = out_message->msg_controllen;
 	const __typeof__(out_message->msg_namelen) name_capacity = out_message->msg_namelen;
 
 retry:
+	ret = LINUX_SYSCALL(__NR_ppoll, &socket_poll, 1, NULL, &saved_mask, sizeof(saved_mask));
+	if (ret < 0) {
+		goto out;
+	}
 	/* recvmsg reports used lengths in these fields. An S2C operation without
 	 * descriptors sets controllen to zero; restore the buffer capacity before
 	 * receiving a subsequent operation that transfers an mmap backing FD. */
@@ -96,12 +119,15 @@ retry:
 	out_message->msg_namelen = name_capacity;
 	out_message->msg_flags = 0;
 #ifdef __NR_socketcall
-	ret = LINUX_SYSCALL(__NR_socketcall, LINUX_SYS_RECVMSG, ((long[6]) { socket, out_message, 0 }));
+	ret = LINUX_SYSCALL(__NR_socketcall, LINUX_SYS_RECVMSG, ((long[6]) { socket, out_message, LINUX_MSG_DONTWAIT }));
 #else
-	ret = LINUX_SYSCALL(__NR_recvmsg, socket, out_message, 0);
+	ret = LINUX_SYSCALL(__NR_recvmsg, socket, out_message, LINUX_MSG_DONTWAIT);
 #endif
+	if (ret == -LINUX_EAGAIN) {
+		goto retry;
+	}
 	if (ret < 0) {
-		return ret;
+		goto out;
 	}
 
 	if (ret >= sizeof(dserver_s2c_callhdr_t)) {
@@ -160,7 +186,7 @@ retry:
 					ret = LINUX_SYSCALL(__NR_sendto, socket, &reply, sizeof(reply), 0, dserver_rpc_hooks_get_server_address(), dserver_rpc_hooks_get_server_address_length());
 #endif
 					if (ret < 0) {
-						return ret;
+						goto out;
 					}
 				} break;
 
@@ -192,7 +218,7 @@ retry:
 					ret = LINUX_SYSCALL(__NR_sendto, socket, &reply, sizeof(reply), 0, dserver_rpc_hooks_get_server_address(), dserver_rpc_hooks_get_server_address_length());
 #endif
 					if (ret < 0) {
-						return ret;
+						goto out;
 					}
 				} break;
 
@@ -224,7 +250,7 @@ retry:
 					ret = LINUX_SYSCALL(__NR_sendto, socket, &reply, sizeof(reply), 0, dserver_rpc_hooks_get_server_address(), dserver_rpc_hooks_get_server_address_length());
 #endif
 					if (ret < 0) {
-						return ret;
+						goto out;
 					}
 				} break;
 
@@ -256,7 +282,7 @@ retry:
 					ret = LINUX_SYSCALL(__NR_sendto, socket, &reply, sizeof(reply), 0, dserver_rpc_hooks_get_server_address(), dserver_rpc_hooks_get_server_address_length());
 #endif
 					if (ret < 0) {
-						return ret;
+						goto out;
 					}
 				} break;
 
@@ -271,7 +297,10 @@ retry:
 		}
 	}
 
-	return ret;
+out:
+	mask_status = LINUX_SYSCALL(__NR_rt_sigprocmask, 2 /* Linux SIG_SETMASK */,
+		&saved_mask, NULL, sizeof(saved_mask));
+	return mask_status < 0 ? mask_status : ret;
 };
 
 #define dserver_rpc_hooks_get_bad_message_status() (-LINUX_EBADMSG)
