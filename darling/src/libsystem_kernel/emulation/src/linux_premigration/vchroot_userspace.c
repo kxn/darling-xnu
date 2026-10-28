@@ -90,15 +90,30 @@ static int prefix_path_len = -1;
 static const char EXIT_PATH[] = "/Volumes/SystemRoot";
 
 #ifndef TEST
-#ifdef VARIANT_DYLD
-#define icase_enabled false
-#else
 #define icase_enabled true
-#endif
-
 #else
 static bool icase_enabled = true;
 #endif
+
+static bool vchroot_component_icase_equal(const char* left, const char* right)
+{
+#ifdef VARIANT_DYLD
+    // dyld runs before libc/pthread locale initialization. Reuse the normal
+    // component fallback without strcasecmp's __current_locale/TSD access.
+    // Fold only ASCII: non-ASCII bytes retain the existing normalization path.
+    unsigned char a, b;
+    do {
+        a = (unsigned char)*left++;
+        b = (unsigned char)*right++;
+        if (a >= 'A' && a <= 'Z') a += 'a' - 'A';
+        if (b >= 'A' && b <= 'Z') b += 'a' - 'A';
+        if (a != b) return false;
+    } while (a);
+    return true;
+#else
+    return strcasecmp(left, right) == 0;
+#endif
+}
 
 // XNU bsd/sys/param.h: MAXSYMLINKS is cumulative over one pathname lookup.
 static const int VCHROOT_MAX_SYMLINKS = 32;
@@ -152,7 +167,7 @@ static __attribute__((noinline)) int vchroot_matching_component(struct context* 
                 matches = -1;
                 goto finished;
             }
-            bool equal = icase_enabled && strcasecmp(de->d_name, component) == 0;
+            bool equal = icase_enabled && vchroot_component_icase_equal(de->d_name, component);
             if (!equal && normalize) {
                 utf8proc_ssize_t count = utf8proc_decompose((const utf8proc_uint8_t*)de->d_name,
                     strlen(de->d_name), candidate, 1024, options);
