@@ -1,6 +1,7 @@
 #include <darling/emulation/linux_premigration/signal/sigexc.h>
 
 #include <stddef.h>
+#include <stdint.h>
 #include <sys/signal.h>
 #include <sys/mman.h>
 #include <_libkernel_init.h>
@@ -69,6 +70,111 @@ static void state_to_kernel(struct linux_ucontext* ctxt, void* tstate, void* fst
 #define kern_printf(...) __simple_fprintf(2, __VA_ARGS__)
 #else
 #define kern_printf(...)
+#endif
+
+
+#ifdef DEBUG_SIGEXC
+/* Best-effort current-process metadata, not a loader-lifetime guarantee. No
+ * allocation, symbol search, dyld lock, Mach/server RPC, or other-process read.
+ * The lock-free range reader does not pin an ImageLoader against dlclose. */
+static int copy_signal_path(char* destination, unsigned capacity, const char* source)
+{
+	unsigned i = 0;
+	while (i < capacity - 1 && source[i]) {
+		unsigned char byte = (unsigned char)source[i];
+		destination[i] = (byte < 32 || byte == 127) ? '?' : (char)byte;
+		++i;
+	}
+	destination[i] = 0;
+	return source[i] != 0;
+}
+
+static void log_signal_identity(int signal_number, unsigned long long pc)
+{
+	/* These are Linux syscall values in the current PID namespace. Do not
+	 * claim they are server-host or separately translated Darwin process IDs. */
+	long pid = LINUX_SYSCALL(__NR_getpid);
+	long tid = LINUX_SYSCALL(__NR_gettid);
+	/* Retain identity even if the interrupted event involves dyld metadata. */
+	kern_printf("sigexc: signal-event phase=identity linux_pid=%ld linux_tid=%ld signal=%d pc=0x%llx\n",
+		pid, tid, signal_number, pc);
+	static int resolving;
+	const char* lookup = "uninitialized";
+	const char* executable_status = "uninitialized";
+	const char* image = "<unknown>";
+	const char* executable = "<unknown>";
+	unsigned long long header_address = 0, offset = 0;
+	char path[512], main_path[512], record[1536];
+	int truncated = 0;
+
+	/* Nonblocking guard: another/nested signal event still gets identity. */
+	if (__atomic_exchange_n(&resolving, 1, __ATOMIC_ACQUIRE)) {
+		lookup = executable_status = "busy";
+	} else {
+		if (_darling_libkernel_callbacks.dyld_func_lookup) {
+			const char* (*image_path)(const void*) = NULL;
+			const void* (*image_header)(const void*) = NULL;
+			int (*executable_path)(char*, uint32_t*) = NULL;
+			_darling_libkernel_callbacks.dyld_func_lookup(
+				"__dyld_image_path_containing_address", (void**)&image_path);
+			_darling_libkernel_callbacks.dyld_func_lookup(
+				"__dyld_get_image_header_containing_address", (void**)&image_header);
+			_darling_libkernel_callbacks.dyld_func_lookup(
+				"__dyld__NSGetExecutablePath", (void**)&executable_path);
+			executable_status = "unavailable";
+			if (executable_path) {
+				uint32_t capacity = sizeof(main_path);
+				main_path[0] = main_path[sizeof(main_path) - 1] = 0;
+				/* dyld's stable startup executable path; unlike image-index
+				 * lookup this does not read a reallocating image-info vector. */
+				if (executable_path(main_path, &capacity) == 0) {
+					for (unsigned i = 0; i < sizeof(main_path) - 1 && main_path[i]; ++i)
+						if ((unsigned char)main_path[i] < 32 || main_path[i] == 127)
+							main_path[i] = '?';
+					executable = main_path;
+					executable_status = "resolved";
+				} else {
+					executable_status = "too-long";
+				}
+			}
+			/* The main path was copied from stable startup storage. Emit it
+			 * before attempting the borrowed, best-effort image lookup. */
+			int main_length = __simple_snprintf(record, sizeof(record),
+				"sigexc: signal-event phase=executable linux_pid=%ld linux_tid=%ld signal=%d pc=0x%llx executable_status=%s executable=%s\n",
+				pid, tid, signal_number, pc, executable_status, executable);
+			if (main_length > 0 && main_length < sizeof(record))
+				LINUX_SYSCALL(__NR_write, 2, record, main_length);
+			lookup = "unavailable";
+			if (image_path && image_header) {
+				/* Darling dyld's existing mapped-range reader is lock-free. */
+				const void* address = (const void*)(uintptr_t)pc;
+				const char* name = image_path(address);
+				const void* header = image_header(address);
+				lookup = "unknown";
+				if (name && header && (uintptr_t)header <= pc) {
+					truncated = copy_signal_path(path, sizeof(path), name);
+					image = path;
+					header_address = (uintptr_t)header;
+					offset = pc - header_address;
+					lookup = "resolved";
+				}
+			}
+		}
+		__atomic_store_n(&resolving, 0, __ATOMIC_RELEASE);
+	}
+	/* __simple_fprintf uses a 512-byte internal buffer. Format the bounded
+	 * pair of paths here and perform one direct Linux write instead. */
+	int length = __simple_snprintf(record, sizeof(record),
+		"sigexc: signal-event phase=image metadata=best-effort linux_pid=%ld linux_tid=%ld signal=%d pc=0x%llx header=0x%llx offset=0x%llx lookup=%s executable_status=%s image_truncated=%d executable=%s image=%s\n",
+		pid, tid, signal_number, pc, header_address, offset, lookup, executable_status,
+		truncated, executable, image);
+	if (length < 0) return;
+	if (length >= sizeof(record)) {
+		length = sizeof(record) - 1;
+		record[length - 1] = '\n';
+	}
+	LINUX_SYSCALL(__NR_write, 2, record, length);
+}
 #endif
 
 void sigexc_setup1(void)
@@ -292,6 +398,9 @@ void sigexc_handler(int linux_signum, struct linux_siginfo* info, struct linux_u
 	}
 
 #ifdef __x86_64__
+#ifdef DEBUG_SIGEXC
+	log_signal_identity(linux_signum, ctxt->uc_mcontext.gregs.rip);
+#endif
 	kern_printf("sigexc: have RIP 0x%llx\n", ctxt->uc_mcontext.gregs.rip);
 #endif
 
