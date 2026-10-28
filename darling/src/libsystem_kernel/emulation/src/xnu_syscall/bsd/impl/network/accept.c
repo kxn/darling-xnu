@@ -34,9 +34,13 @@ long sys_accept_nocancel(int fd, void* from, int* socklen)
 		ret = errno_linux_to_bsd(ret);
 	else
 	{
-		fixed = (struct sockaddr_fixup*) from;
-		fixed->bsd_family = sfamily_linux_to_bsd(fixed->linux_family);
-		fixed->bsd_length = *socklen;
+		// accept(fd, NULL, NULL) requests no peer address. Linux has already
+		// accepted the connection, so only convert an address when requested.
+		if (from) {
+			fixed = (struct sockaddr_fixup*) from;
+			fixed->bsd_family = sfamily_linux_to_bsd(fixed->linux_family);
+			fixed->bsd_length = *socklen;
+		}
 
 		// on macOS (and BSD), accept-ed sockets inherit O_NONBLOCK
 		int parent_flags = sys_fcntl_nocancel(fd, F_GETFL, 0);

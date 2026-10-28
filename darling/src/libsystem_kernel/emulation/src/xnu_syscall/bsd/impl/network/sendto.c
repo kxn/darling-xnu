@@ -26,10 +26,9 @@ long sys_sendto_nocancel(int fd, const void* buffer, unsigned long length,
 
 	struct sockaddr_fixup* fixed = NULL;
 
-	if (socklen > 512)
-		return -EINVAL;
-
 	if (sockaddr != NULL) {
+		if (socklen > 512)
+			return -EINVAL;
 		fixed = __builtin_alloca(sockaddr_fixup_size_from_bsd(sockaddr, socklen));
 		ret = socklen = sockaddr_fixup_from_bsd(fixed, sockaddr, socklen);
 		if (ret < 0)
