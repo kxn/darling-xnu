@@ -16,6 +16,7 @@
 #include <darling/emulation/xnu_syscall/bsd/helper/misc/sysctl_net.h>
 #include <darling/emulation/xnu_syscall/bsd/helper/misc/sysctl_vm.h>
 
+extern void* memcpy(void* destination, const void* source, __SIZE_TYPE__ count);
 extern char *strchr(const char *s, int c);
 extern int strncmp(const char *s1, const char *s2, __SIZE_TYPE__ n);
 extern int strcmp(const char *s1, const char *s2);
@@ -40,16 +41,30 @@ const struct known_sysctl sysctls_root = {
 	.oid = 0, .type = CTLTYPE_NODE, .exttype = "", .name = "", .subctls = sysctls_global
 };
 
-void copyout_string(const char* str, char* out, unsigned long* out_len)
+long copyout_string(const char* str, char* out, unsigned long* out_len)
 {
-	unsigned long len;
+	/* XNU sysctl_io_string includes the terminating NUL. sysctl_old_user
+	 * rejects an undersized output before copying any bytes. */
+	unsigned long len = strlen(str) + 1;
+	if (out_len == NULL)
+		return out == NULL ? 0 : -EFAULT;
+	if (out != NULL && *out_len < len) {
+		*out_len = 0;
+		return -ENOMEM;
+	}
 	if (out != NULL)
-		len = strlcpy(out, str, *out_len);
-	else
-		len = strlen(str);
+		memcpy(out, str, len);
+	*out_len = len;
+	return 0;
+}
 
-	if (out_len != NULL)
-		*out_len = len;
+long copyout_readonly_string(const char* str, char* out, unsigned long* out_len, const void* new_value, unsigned long new_len)
+{
+	/* sysctl_create_user_req drops newptr when newlen is zero. Read-only
+	 * OIDs are rejected by sysctl_root before their handler or copyout. */
+	if (new_value != NULL && new_len != 0)
+		return -EPERM;
+	return copyout_string(str, out, out_len);
 }
 
 long sys_sysctl(int* name, unsigned int nlen, void* old,

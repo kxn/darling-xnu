@@ -8,6 +8,8 @@
 #include <darling/emulation/xnu_syscall/bsd/helper/misc/sysctl_kern.h>
 #include <darling/emulation/xnu_syscall/bsd/helper/misc/sysctl_proc.h>
 #include <darling/emulation/linux_premigration/ext/sys/utsname.h>
+#include <darling/emulation/common/base.h>
+#include <darling/emulation/linux_premigration/linux-syscalls/linux.h>
 #include <darling/emulation/common/simple.h>
 #include <darling/emulation/common/string.h>
 
@@ -39,6 +41,7 @@ static sysctl_handler(handle_cpusubtype);
 static sysctl_handler(handle_cputhreadtype);
 static sysctl_handler(handle_cpu64bitcapable);
 static sysctl_handler(handle_machine);
+static sysctl_handler(handle_model);
 static sysctl_handler(handle_cpufrequency);
 
 const struct known_sysctl sysctls_hw[] = {
@@ -54,6 +57,7 @@ const struct known_sysctl sysctls_hw[] = {
 	{ .oid = _HW_CPUSUBTYPE, .type = CTLTYPE_INT, .exttype = "", .name = "cpusubtype", .handler = handle_cpusubtype },
 	{ .oid = _HW_CPUTHREADTYPE, .type = CTLTYPE_INT, .exttype = "", .name = "cputhreadtype", .handler = handle_cputhreadtype },
 	{ .oid = _HW_64BITCAPABLE, .type = CTLTYPE_INT, .exttype = "", .name = "cpu64bit_capable", .handler = handle_cpu64bitcapable },
+	{ .oid = HW_MODEL, .type = CTLTYPE_STRING, .exttype = "S", .name = "model", .handler = handle_model },
 	{ .oid = HW_MACHINE, .type = CTLTYPE_STRING, .exttype = "S", .name = "machine", .handler = handle_machine },
 	{ .oid = _HW_CPUFREQUENCY, .type = CTLTYPE_INT, .exttype = "", .name = "cpufrequency", .handler = handle_cpufrequency },
 	{ .oid = -1 }
@@ -190,6 +194,32 @@ sysctl_handler(handle_cpu64bitcapable)
 
 sysctl_handler(handle_machine)
 {
-	copyout_string(need_uname()->machine, (char*) old, oldlen);
-	return 0;
+	return copyout_readonly_string(need_uname()->machine, (char*) old, oldlen, _new, newlen);
+}
+
+/* A hardware model is descriptive platform information, not a Mac identity.
+ * Read the Linux kernel's product name without routing /sys through vchroot.
+ * Sandboxed/container hosts without DMI expose the explicit virtual platform. */
+sysctl_handler(handle_model)
+{
+	char model[256];
+	const char* value = "Darling Virtual Platform";
+	long fd = LINUX_SYSCALL(__NR_openat, -100,
+		"/sys/class/dmi/id/product_name", 0x80000 /* O_RDONLY | O_CLOEXEC */, 0);
+	if (fd >= 0) {
+		long count;
+		do {
+			count = LINUX_SYSCALL(__NR_read, fd, model, sizeof(model) - 1);
+		} while (count == -4 /* Linux EINTR */);
+		LINUX_SYSCALL(__NR_close, fd);
+		/* A full buffer may be truncated; never report a partial identity. */
+		if (count > 0 && count < sizeof(model) - 1) {
+			while (count > 0 && (model[count - 1] == '\n' || model[count - 1] == '\r'))
+				--count;
+			model[count] = '\0';
+			if (count > 0)
+				value = model;
+		}
+	}
+	return copyout_readonly_string(value, old, oldlen, _new, newlen);
 }

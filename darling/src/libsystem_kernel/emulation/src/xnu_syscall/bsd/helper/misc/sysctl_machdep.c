@@ -71,11 +71,11 @@ const struct known_sysctl sysctls_machdep[] = {
 #endif
 
 
-static inline void copyout_int(int value, char* to_copy, size_t* to_copy_length)
+static inline long copyout_int(int value, char* to_copy, size_t* to_copy_length, const void* new_value, unsigned long new_len)
 {
         char tmp[64];
         __simple_sprintf(tmp, "%d", value);
-        copyout_string(tmp, to_copy, to_copy_length);
+        return copyout_readonly_string(tmp, to_copy, to_copy_length, new_value, new_len);
 }
 
 
@@ -97,9 +97,7 @@ sysctl_handler(handle_vendor)
     __cpuid(level, eax, v.ebx, v.ecx, v.edx);
 
 	v.name[12] = 0;
-	copyout_string(v.name, (char*) old, oldlen);
-
-	return 0;
+	return copyout_readonly_string(v.name, (char*) old, oldlen, _new, newlen);
 }
 
 sysctl_handler(handle_max_basic)
@@ -109,9 +107,7 @@ sysctl_handler(handle_max_basic)
 
     __cpuid(level, eax, ebx, ecx, edx);
 
-	copyout_int(eax, (char*)old,oldlen);
-
-	return 0;
+	return copyout_int(eax, (char*)old,oldlen, _new, newlen);
 }
 
 sysctl_handler(handle_family)
@@ -123,9 +119,7 @@ sysctl_handler(handle_family)
     eax = eax >> 7;
     eax &= 15;
 
-    copyout_int(eax, old, oldlen);
-
-    return 0;
+    return copyout_int(eax, old, oldlen, _new, newlen);
 }
 
 sysctl_handler(handle_model)
@@ -137,9 +131,7 @@ sysctl_handler(handle_model)
     eax = eax >> 3;
     eax &= 15;
 
-    copyout_int(eax,(char*)old, oldlen);
-
-    return 0;
+    return copyout_int(eax,(char*)old, oldlen, _new, newlen);
 }
 
 sysctl_handler(handle_stepping)
@@ -150,9 +142,7 @@ sysctl_handler(handle_stepping)
 
     eax &= 15;
 
-    copyout_int(eax,(char*)old, oldlen);
-
-    return 0;
+    return copyout_int(eax,(char*)old, oldlen, _new, newlen);
 }
 
 sysctl_handler(handle_brand_string)
@@ -183,9 +173,7 @@ sysctl_handler(handle_brand_string)
 		}
 
     v.name[48] = 0;
-    copyout_string(v.name, (char*) old, oldlen);
-
-    return 0;
+    return copyout_readonly_string(v.name, (char*) old, oldlen, _new, newlen);
 }
 
 sysctl_handler(handle_features)
